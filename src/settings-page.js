@@ -162,44 +162,42 @@ class UE4SSSettingsPage extends React.Component {
 
     // ── Toggle helper (falls back to FormControl select) ─────────────────────
     const mkToggle = (label, checked, onChange, moreId, moreHelp) => {
+      const moreChild = More && moreId
+        ? ce('span', { style: { verticalAlign: 'middle', marginLeft: '4px' } },
+            ce(More, { id: moreId, name: label }, moreHelp))
+        : null;
       const control = Toggle
-        ? ce(Toggle, { checked, onToggle: (v) => onChange(v) }, label)
+        ? ce(Toggle, { checked, onToggle: (v) => onChange(v) }, label, moreChild)
         : FormControl
-          ? ce(FormControl, {
-              componentClass: 'select',
-              value: checked ? '1' : '0',
-              onChange: (e) => onChange(e.target.value === '1'),
-            },
-              ce('option', { value: '1' }, 'Enabled'),
-              ce('option', { value: '0' }, 'Disabled'),
+          ? ce('span', null,
+              ce(FormControl, {
+                componentClass: 'select',
+                value: checked ? '1' : '0',
+                onChange: (e) => onChange(e.target.value === '1'),
+              },
+                ce('option', { value: '1' }, 'Enabled'),
+                ce('option', { value: '0' }, 'Disabled'),
+              ),
+              moreChild,
             )
           : null;
-      const help = More && moreId ? ce(More, { id: moreId, name: label }, moreHelp) : null;
-      // Inline row: [control] [ⓘ] on the same line, vertically centered
-      const helpSpan = help
-        ? ce('span', { style: { display: 'inline-flex', alignItems: 'center', lineHeight: 1 } }, help)
-        : null;
-      const row = helpSpan
-        ? ce('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, control, helpSpan)
-        : control;
       return FormGroup
         ? ce(FormGroup, { style: { marginBottom: '12px' } },
             ControlLabel && !Toggle ? ce(ControlLabel, null, label) : null,
-            row,
+            control,
           )
-        : ce('div', { style: { marginBottom: '12px' } }, row);
+        : ce('div', { style: { marginBottom: '12px' } }, control);
     };
 
     // ── Panel: Rendering ─────────────────────────────────────────────────────
     const renderingPanel = mkPanel('Rendering', null,
       FormGroup ? ce(FormGroup, { style: { marginBottom: '12px' } },
-        ce('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-          ControlLabel ? ce(ControlLabel, { style: { marginBottom: 0 } }, 'Graphics API') : null,
-          More ? ce('span', { style: { display: 'inline-flex', alignItems: 'center', lineHeight: 1 } },
+        ControlLabel ? ce(ControlLabel, { style: { marginBottom: 0 } }, 'Graphics API',
+          More ? ce('span', { style: { verticalAlign: 'middle', marginLeft: '4px' } },
             ce(More, { id: 'ue4ss-graphics-api', name: 'Graphics API' },
               'EMERGENCY 2023 requires dx11; opengl causes a black screen.'),
           ) : null,
-        ),
+        ) : null,
         FormControl ? ce(FormControl, {
           componentClass: 'select',
           value: graphicsAPI,
