@@ -24,6 +24,7 @@ const mockReact = {
 const mockRbs = {
   Button: 'Button', ControlLabel: 'ControlLabel',
   FormControl: 'FormControl', FormGroup: 'FormGroup', HelpBlock: 'HelpBlock',
+  Panel: 'Panel', ListGroup: 'ListGroup', ListGroupItem: 'ListGroupItem',
 };
 
 const mockFs = {
@@ -823,13 +824,18 @@ test('render(): returns a div when fully loaded with a settingsPath', () => {
   assert.ok(el, 'render() should return an element');
   assert.strictEqual(el.type, 'div', 'outermost element should be a div');
 });
-test('render(): loaded view includes Refresh button alongside Save', () => {
+test('render(): loaded view has a btn-toolbar with Save and Refresh', () => {
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
   inst.state = { loaded: true, settingsPath: FLAT_SETTINGS, error: null, graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirty: false };
   const el = inst.render();
-  // Children include React elements (Button objects) — at least two non-null non-string children expected
-  const btnChildren = (el.children || []).filter(c => c && typeof c !== 'string' && c !== null);
-  assert.ok(btnChildren.length >= 2, 'loaded view should have at least Save + Refresh buttons');
+  // Outer div contains section groups + btn-toolbar
+  const outerChildren = (el.children || []).filter(c => c && typeof c !== 'string' && c !== null);
+  assert.ok(outerChildren.length >= 2, 'loaded view should have multiple section elements');
+  // toolbar is the last non-null child; check it has buttons
+  const toolbar = (el.children || []).find(c => c && c.props && c.props.className === 'btn-toolbar');
+  assert.ok(toolbar, 'should have a btn-toolbar div');
+  const toolbarBtns = (toolbar.children || []).filter(c => c && typeof c !== 'string' && c !== null);
+  assert.ok(toolbarBtns.length >= 2, 'toolbar should have at least Save + Refresh buttons');
 });
 test('refresh: setState({ loaded:false, error:null }) then load() — state resets before re-read', async () => {
   const savedStat = mockFs.statAsync;
