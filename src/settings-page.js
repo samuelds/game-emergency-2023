@@ -175,18 +175,26 @@ class UE4SSSettingsPage extends React.Component {
             )
           : null;
       const help = More && moreId ? ce(More, { id: moreId, name: label }, moreHelp) : null;
+      // Inline row: [control] [ⓘ] on the same line
+      const row = help
+        ? ce('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, control, help)
+        : control;
       return FormGroup
         ? ce(FormGroup, { style: { marginBottom: '12px' } },
             ControlLabel && !Toggle ? ce(ControlLabel, null, label) : null,
-            control, help,
+            row,
           )
-        : ce('div', { style: { marginBottom: '12px' } }, control, help);
+        : ce('div', { style: { marginBottom: '12px' } }, row);
     };
 
     // ── Panel: Rendering ─────────────────────────────────────────────────────
     const renderingPanel = mkPanel('Rendering', null,
       FormGroup ? ce(FormGroup, { style: { marginBottom: '12px' } },
-        ControlLabel ? ce(ControlLabel, null, 'Graphics API') : null,
+        ce('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
+          ControlLabel ? ce(ControlLabel, null, 'Graphics API') : null,
+          More ? ce(More, { id: 'ue4ss-graphics-api', name: 'Graphics API' },
+            'EMERGENCY 2023 requires dx11; opengl causes a black screen.') : null,
+        ),
         FormControl ? ce(FormControl, {
           componentClass: 'select',
           value: graphicsAPI,
@@ -196,8 +204,6 @@ class UE4SSSettingsPage extends React.Component {
           ce('option', { value: 'd3d11' },  'DirectX 11 (d3d11)'),
           ce('option', { value: 'opengl' }, 'OpenGL'),
         ) : null,
-        More ? ce(More, { id: 'ue4ss-graphics-api', name: 'Graphics API' },
-          'EMERGENCY 2023 requires dx11; opengl causes a black screen.') : null,
       ) : null,
       FormGroup ? ce(FormGroup, { style: { marginBottom: '12px' } },
         ControlLabel ? ce(ControlLabel, null, 'Render Mode') : null,
