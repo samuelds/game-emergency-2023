@@ -642,6 +642,12 @@ class UE4SSSettingsPage extends React.Component {
               if (trimmed) this.setState(s => ({ modFolders: [...s.modFolders, trimmed], newFolder: '', dirty: true }));
             },
           }, 'Add') : null,
+          ' ',
+          Button && typeof this.props.api.selectDir === 'function' ? ce(Button, {
+            onClick: () => this.props.api.selectDir({ title: 'Select a UE4SS mods folder' })
+              .then(p => { if (p) this.setState({ modFolders: this.state.modFolders.concat(p), dirty: true }); })
+              .catch(() => null),
+          }, 'Browse…') : null,
         ),
       ) : null,
       Button ? ce(Button, {

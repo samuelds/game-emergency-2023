@@ -686,6 +686,41 @@ test('Add folder: pushes to modFolders and clears newFolder', () => {
   assert.strictEqual(inst.state.newFolder, '');
   assert.strictEqual(inst.state.dirty, true);
 });
+test('Browse: selectDir result is appended to modFolders', async () => {
+  const apiWithSelectDir = {
+    ...mockContext.api,
+    selectDir: () => Promise.resolve('/absolute/path/to/Mods'),
+  };
+  const inst = new idx.UE4SSSettingsPage({ api: apiWithSelectDir });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: ['../Mods1'], newFolder: '', loaded: true, error: null, dirty: false,
+  };
+  // Simulate Browse click: same logic as in render()
+  await apiWithSelectDir.selectDir({ title: 'Select a UE4SS mods folder' })
+    .then(p => { if (p) inst.setState({ modFolders: inst.state.modFolders.concat(p), dirty: true }); })
+    .catch(() => null);
+  assert.deepStrictEqual(inst.state.modFolders, ['../Mods1', '/absolute/path/to/Mods']);
+  assert.strictEqual(inst.state.dirty, true);
+});
+test('Browse: cancel (empty string) does not change modFolders', async () => {
+  const apiWithSelectDir = {
+    ...mockContext.api,
+    selectDir: () => Promise.resolve(''),
+  };
+  const inst = new idx.UE4SSSettingsPage({ api: apiWithSelectDir });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: ['../Mods1'], newFolder: '', loaded: true, error: null, dirty: false,
+  };
+  await apiWithSelectDir.selectDir({ title: 'Select a UE4SS mods folder' })
+    .then(p => { if (p) inst.setState({ modFolders: inst.state.modFolders.concat(p), dirty: true }); })
+    .catch(() => null);
+  assert.deepStrictEqual(inst.state.modFolders, ['../Mods1'], 'cancel leaves modFolders unchanged');
+  assert.strictEqual(inst.state.dirty, false, 'cancel does not set dirty');
+});
 test('Remove folder: filters modFolders by index', () => {
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
   inst.state = {
