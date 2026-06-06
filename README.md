@@ -1,8 +1,7 @@
 # Vortex game extension — EMERGENCY 2023
 
 Makes **EMERGENCY 2023** (Steam `850170`) a Vortex-managed game so any UE4SS mod
-(e.g. [em-fast-boot](https://gitlab.com/em-modding/em-fast-boot)) installs in one
-click instead of users hand-dropping files.
+installs in one click instead of users hand-dropping files.
 
 ## Game detection
 

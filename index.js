@@ -1,8 +1,7 @@
 /*
  * Vortex game extension — EMERGENCY 2023
  * ----------------------------------------------------------------------------
- * Makes EMERGENCY 2023 a Vortex-managed game so any UE4SS mod (e.g. em-fast-boot)
- * installs in one click. Registers the game, finds it via Steam, and deploys mods
+ * Makes EMERGENCY 2023 a Vortex-managed game so any UE4SS mod installs in one click. Registers the game, finds it via Steam, and deploys mods
  * into the UE4SS Mods folder.
  *
  * Grounded on the official Vortex docs (package/test/develop/submit wiki):
