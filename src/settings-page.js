@@ -175,9 +175,12 @@ class UE4SSSettingsPage extends React.Component {
             )
           : null;
       const help = More && moreId ? ce(More, { id: moreId, name: label }, moreHelp) : null;
-      // Inline row: [control] [ⓘ] on the same line
-      const row = help
-        ? ce('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, control, help)
+      // Inline row: [control] [ⓘ] on the same line, vertically centered
+      const helpSpan = help
+        ? ce('span', { style: { display: 'inline-flex', alignItems: 'center', lineHeight: 1 } }, help)
+        : null;
+      const row = helpSpan
+        ? ce('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, control, helpSpan)
         : control;
       return FormGroup
         ? ce(FormGroup, { style: { marginBottom: '12px' } },
@@ -191,9 +194,11 @@ class UE4SSSettingsPage extends React.Component {
     const renderingPanel = mkPanel('Rendering', null,
       FormGroup ? ce(FormGroup, { style: { marginBottom: '12px' } },
         ce('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-          ControlLabel ? ce(ControlLabel, null, 'Graphics API') : null,
-          More ? ce(More, { id: 'ue4ss-graphics-api', name: 'Graphics API' },
-            'EMERGENCY 2023 requires dx11; opengl causes a black screen.') : null,
+          ControlLabel ? ce(ControlLabel, { style: { marginBottom: 0 } }, 'Graphics API') : null,
+          More ? ce('span', { style: { display: 'inline-flex', alignItems: 'center', lineHeight: 1 } },
+            ce(More, { id: 'ue4ss-graphics-api', name: 'Graphics API' },
+              'EMERGENCY 2023 requires dx11; opengl causes a black screen.'),
+          ) : null,
         ),
         FormControl ? ce(FormControl, {
           componentClass: 'select',
