@@ -32,9 +32,9 @@ deploying its files to `EMERGENCY/Binaries/Win64`.
 absolute paths or `../` traversal are rejected.
 
 **At install time** (`installUE4SSInjector`): the `UE4SS-settings.ini` is patched to set
-`[Debug] GraphicsAPI = dx11` before deployment. EMERGENCY 2023 requires DirectX 11; the UE4SS
-default (`opengl`) causes a black screen. The patch is applied via `generatefile`; if the source
-INI cannot be read the file is copied unmodified as a fallback.
+`[Debug] GraphicsAPI = dx11` (EMERGENCY 2023 requires DirectX 11; `opengl` causes a black screen)
+**and** `[Debug] GuiConsoleEnabled = 0` (hides the debug console by default).
+The patch is applied via `generatefile`; if the source INI cannot be read the file is copied unmodified as a fallback.
 
 ## UE4SS auto-install
 
@@ -57,10 +57,20 @@ On first launch (`setup` callback), if UE4SS is not already installed:
 ## Settings page (Settings → UE4SS)
 
 A Vortex settings page (registered only when `react-bootstrap` is available and the game
-is discovered) lets users edit two fields in the deployed `UE4SS-settings.ini`:
+is discovered) lets users edit all `[Debug]` and `[Overrides]` fields in the deployed
+`UE4SS-settings.ini`:
 
-- **GraphicsAPI** — `dx11` (recommended) or `opengl`
-- **GuiConsoleEnabled** — enabled / disabled
+| Field | INI key | Values |
+|---|---|---|
+| Graphics API | `GraphicsAPI` | `dx11` / `d3d11` / `opengl` |
+| Console | `ConsoleEnabled` | `0` / `1` |
+| GUI Console | `GuiConsoleEnabled` | `0` / `1` |
+| GUI Console Visible | `GuiConsoleVisible` | `0` / `1` |
+| Render Mode | `RenderMode` | `ExternalThread` / `EngineTick` / `GameViewportClientTick` |
+| External mod folders | `+ModsFolderPaths` | list of paths in `[Overrides]` |
+
+The page also exposes **Open folder** and **Edit file** buttons (using `util.opn`) for direct
+access to the settings file location. A **Refresh** button re-reads the INI without restarting Vortex.
 
 The page finds the settings file in the flat location first (`Binaries/Win64/UE4SS-settings.ini`),
 then falls back to the legacy nested location (`Binaries/Win64/ue4ss/UE4SS-settings.ini`).
@@ -82,13 +92,15 @@ All logic is in plain JS. There is no build step and no npm dependencies.
 ## Tests
 
 ```bash
-node test/index.test.js   # 62/62 tests passed
+node test/index.test.js   # 81/81 tests passed
 ```
 
 Tests cover: `isSafeRelPath`, `isTrustedUE4SSAsset`, `testUE4SSInjector` (flat + nested),
-`getIniValue`, `setIniValue`, `installUE4SSInjector` (generatefile + fallback),
+`getIniValue`, `setIniValue`, `getIniListValues`, `setIniListValues`,
+`installUE4SSInjector` (generatefile baking both GraphicsAPI=dx11 and GuiConsoleEnabled=0, fallback),
 `fetchLatestUE4SS` (HTTP stubs), `downloadUE4SS` (consent gate, H1 guard), `isUE4SSInstalled`
-(all 5 markers + fail-safe), `findSettingsFile`, `UE4SSSettingsPage` (load/save/render).
+(all 5 markers + fail-safe), `findSettingsFile`,
+`UE4SSSettingsPage` (load all 6 fields, save all 6 fields + mod folders, render full UI, Refresh).
 
 ## Build and submit
 
