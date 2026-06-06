@@ -13,9 +13,9 @@
  * LIVE-RESOLVED via the in-game MCP (KismetSystemLibrary path query, 2026-06-06):
  *   - Steam install root  : .../steamapps/common/EMERGENCY/   (what findByAppId returns)
  *   - UE project folder   : EMERGENCY  (so the project lives at <root>/EMERGENCY/)
- *   - UE4SS FLAT layout   : UE4SS_v3.0.1.zip extracts dwmapi.dll + UE4SS-settings.ini +
- *                           Mods/ DIRECTLY into Binaries/Win64 (no ue4ss/ subfolder) ✓ live-verified
- *   - UE4SS mod path      : EMERGENCY/Binaries/Win64/Mods  (relative to root) ✓ A1 flat
+ *   - UE4SS layout        : experimental build uses ue4ss/ SUBFOLDER (dwmapi.dll at Win64 root,
+ *                           UE4SS.dll + UE4SS-settings.ini + Mods/ inside ue4ss/). 3.0.1 stable crashes.
+ *   - UE4SS mod path      : EMERGENCY/Binaries/Win64/ue4ss/Mods  (relative to root)
  *   - executable          : EMERGENCY.exe  (root launcher Steam runs; live-listed) ✓ G1 resolved
  *     (the UE shipping binary EMERGENCY/Binaries/Win64/EMERGENCY-Win64-Shipping.exe also exists)
  *
@@ -31,7 +31,8 @@
  *     https-only, and the asset name is re-validated before the URL is trusted.
  *   - An explicit consent dialog names the release version and destination folder before
  *     any download is started; user can cancel without side effects.
- *   - Grounded: repo UE4SS-RE/RE-UE4SS, asset UE4SS_v3.0.1.zip, dest Binaries/Win64.
+ *   - Grounded: repo UE4SS-RE/RE-UE4SS, tag experimental-latest (rolling), dest Binaries/Win64.
+ *   - NOTE: 3.0.1 stable crashes EMERGENCY 2023 (UE5.3.2); experimental build required.
  *   - A Vortex settings page lets users change GraphicsAPI and GuiConsoleEnabled post-install.
  *
  * ALL paths live-resolved via the in-game MCP (KismetSystemLibrary + io.popen dir, 2026-06-06).
@@ -57,8 +58,8 @@ const PROJECT = 'EMERGENCY';
 // ✓ live-resolved: Binaries/Win64 relative to install root — injector destination.
 const BINARIES_WIN64 = path.join('EMERGENCY', 'Binaries', 'Win64');
 
-// A1: FLAT layout — UE4SS_v3.0.1.zip puts Mods/ directly in Binaries/Win64, no ue4ss/ subfolder.
-const MOD_PATH = path.join(BINARIES_WIN64, 'Mods');
+// NESTED layout — experimental build uses ue4ss/ subfolder (dwmapi.dll at Win64 root, rest in ue4ss/).
+const MOD_PATH = path.join(BINARIES_WIN64, 'ue4ss', 'Mods');
 
 // UE4SS injector modType id — deploys dwmapi.dll + Mods/ + settings to Binaries/Win64.
 const UE4SS_INJECTOR_MODTYPE = 'emergency2023-ue4ss-injector';
@@ -69,8 +70,8 @@ const UE4SS_SETTINGS_FILE = 'UE4SS-settings.ini';
 // GitHub API base for UE4SS releases.
 const UE4SS_GITHUB = 'https://api.github.com/repos/UE4SS-RE/RE-UE4SS';
 
-// Matches the main release zip (e.g. UE4SS_v3.0.1.zip) but NOT the z* variants.
-const UE4SS_ASSET_PATTERN = /^UE4SS_v[\d.]+\.zip$/i;
+// Matches stable (UE4SS_v3.0.1.zip) AND experimental (UE4SS_v3.0.1-953-gb872ad11.zip) but NOT z* variants.
+const UE4SS_ASSET_PATTERN = /^UE4SS_v[\d.]+(?:-\d+-g[0-9a-f]+)?\.zip$/i;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -348,7 +349,7 @@ function fetchLatestUE4SS() {
         'Accept': 'application/vnd.github+json',
       },
     };
-    https.get(UE4SS_GITHUB + '/releases/latest', opts, (res) => {
+    https.get(UE4SS_GITHUB + '/releases/tags/experimental-latest', opts, (res) => {
       let body = '';
       res.on('data', d => body += d);
       res.on('end', () => {
@@ -390,7 +391,7 @@ async function downloadUE4SS(api) {
     'question',
     'Install UE4SS?',
     {
-      text: 'EMERGENCY 2023 mods require UE4SS (' + asset.tag + '). Vortex will download the official release from github.com/UE4SS-RE/RE-UE4SS and install it into Binaries/Win64. Continue?',
+      text: 'EMERGENCY 2023 mods require UE4SS (' + asset.tag + ', experimental build — required for UE5.3.2; the 3.0.1 stable crashes this game). Vortex will download the official release from github.com/UE4SS-RE/RE-UE4SS and install it into Binaries/Win64. Continue?',
     },
     [{ label: 'Cancel' }, { label: 'Download UE4SS' }],
   );

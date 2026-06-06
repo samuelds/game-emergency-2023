@@ -176,6 +176,22 @@ test('rejects bad asset name', () => assert.ok(!idx.isTrustedUE4SSAsset({
 test('rejects null asset', () => assert.ok(!idx.isTrustedUE4SSAsset(null)));
 
 // ===========================================================================
+// 2b. UE4SS_ASSET_PATTERN  (stable + experimental naming)
+// ===========================================================================
+console.log('\nUE4SS_ASSET_PATTERN');
+
+test('matches stable name UE4SS_v3.0.1.zip',
+  () => assert.ok(idx.UE4SS_ASSET_PATTERN.test('UE4SS_v3.0.1.zip')));
+test('matches experimental name UE4SS_v3.0.1-953-gb872ad11.zip',
+  () => assert.ok(idx.UE4SS_ASSET_PATTERN.test('UE4SS_v3.0.1-953-gb872ad11.zip')));
+test('rejects zDEV-UE4SS_v3.0.1-953-gb872ad11.zip',
+  () => assert.ok(!idx.UE4SS_ASSET_PATTERN.test('zDEV-UE4SS_v3.0.1-953-gb872ad11.zip')));
+test('rejects zCustomGameConfigs.zip',
+  () => assert.ok(!idx.UE4SS_ASSET_PATTERN.test('zCustomGameConfigs.zip')));
+test('rejects zMapGenBP.zip',
+  () => assert.ok(!idx.UE4SS_ASSET_PATTERN.test('zMapGenBP.zip')));
+
+// ===========================================================================
 // 3. testUE4SSInjector  (A2 — flat layout + path safety)
 // ===========================================================================
 console.log('\ntestUE4SSInjector');
@@ -339,20 +355,27 @@ test('setmodtype is always the last instruction', () => {
 // ===========================================================================
 console.log('\nfetchLatestUE4SS');
 
-test('(c) selects UE4SS_vX.Y.Z.zip and skips zDEV variant', () => {
+test('(c) selects experimental asset and skips zDEV/zCustom/zMap variants', () => {
   const savedGet = mockHttps.get;
-  mockHttps.get = makeHttpsGet(200, {
-    tag_name: 'v3.0.1',
-    assets: [
-      { name: 'zDEV-UE4SS_v3.0.1.zip', browser_download_url: 'https://github.com/x' },
-      { name: 'UE4SS_v3.0.1.zip',       browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1.zip' },
-    ],
-  });
+  let capturedUrl = '';
+  mockHttps.get = function(url, opts, cb) {
+    capturedUrl = url;
+    return makeHttpsGet(200, {
+      tag_name: 'experimental-latest',
+      assets: [
+        { name: 'zDEV-UE4SS_v3.0.1-953-gb872ad11.zip', browser_download_url: 'https://github.com/x' },
+        { name: 'zCustomGameConfigs.zip',                browser_download_url: 'https://github.com/x' },
+        { name: 'zMapGenBP.zip',                         browser_download_url: 'https://github.com/x' },
+        { name: 'UE4SS_v3.0.1-953-gb872ad11.zip',        browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1-953-gb872ad11.zip' },
+      ],
+    })(url, opts, cb);
+  };
   return idx.fetchLatestUE4SS().then(asset => {
     mockHttps.get = savedGet;
     assert.ok(asset, 'should return an asset');
-    assert.strictEqual(asset.name, 'UE4SS_v3.0.1.zip');
-    assert.strictEqual(asset.tag, 'v3.0.1');
+    assert.strictEqual(asset.name, 'UE4SS_v3.0.1-953-gb872ad11.zip');
+    assert.strictEqual(asset.tag, 'experimental-latest');
+    assert.ok(capturedUrl.includes('/releases/tags/experimental-latest'), 'endpoint uses experimental-latest tag');
   });
 });
 test('(d) returns null on non-200 status', () => {
@@ -403,8 +426,8 @@ test('aborts when no asset found (no dialog shown)', () => {
 test('aborts download when user clicks Cancel', () => {
   const savedGet = mockHttps.get;
   mockHttps.get = makeHttpsGet(200, {
-    tag_name: 'v3.0.1',
-    assets: [{ name: 'UE4SS_v3.0.1.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1.zip' }],
+    tag_name: 'experimental-latest',
+    assets: [{ name: 'UE4SS_v3.0.1-953-gb872ad11.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1-953-gb872ad11.zip' }],
   });
   const savedDialog = mockContext.api.showDialog;
   mockContext.api.showDialog = () => Promise.resolve({ action: 'Cancel' });
@@ -421,8 +444,8 @@ test('aborts download when user clicks Cancel', () => {
 test('starts download + install when user confirms', () => {
   const savedGet = mockHttps.get;
   mockHttps.get = makeHttpsGet(200, {
-    tag_name: 'v3.0.1',
-    assets: [{ name: 'UE4SS_v3.0.1.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1.zip' }],
+    tag_name: 'experimental-latest',
+    assets: [{ name: 'UE4SS_v3.0.1-953-gb872ad11.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1-953-gb872ad11.zip' }],
   });
   const savedDialog = mockContext.api.showDialog;
   mockContext.api.showDialog = () => Promise.resolve({ action: 'Download UE4SS' });
@@ -441,11 +464,11 @@ test('starts download + install when user confirms', () => {
     assert.ok(emitted.includes('start-install-download'), 'start-install-download emitted');
   });
 });
-test('dialog text names the release tag + Binaries/Win64', () => {
+test('dialog text names the release tag + Binaries/Win64 + experimental', () => {
   const savedGet = mockHttps.get;
   mockHttps.get = makeHttpsGet(200, {
-    tag_name: 'v3.0.1',
-    assets: [{ name: 'UE4SS_v3.0.1.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1.zip' }],
+    tag_name: 'experimental-latest',
+    assets: [{ name: 'UE4SS_v3.0.1-953-gb872ad11.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1-953-gb872ad11.zip' }],
   });
   let dialogText = '';
   const savedDialog = mockContext.api.showDialog;
@@ -456,8 +479,9 @@ test('dialog text names the release tag + Binaries/Win64', () => {
   return idx.downloadUE4SS(mockContext.api).then(() => {
     mockHttps.get = savedGet;
     mockContext.api.showDialog = savedDialog;
-    assert.ok(dialogText.includes('v3.0.1'),        'tag in dialog text');
-    assert.ok(dialogText.includes('Binaries/Win64'), 'destination in dialog text');
+    assert.ok(dialogText.includes('experimental-latest'), 'tag in dialog text');
+    assert.ok(dialogText.includes('Binaries/Win64'),       'destination in dialog text');
+    assert.ok(dialogText.includes('experimental'),         'dialog mentions experimental build');
   });
 });
 test('skips download for untrusted asset URL (H1 guard)', () => {
