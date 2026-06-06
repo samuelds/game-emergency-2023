@@ -261,13 +261,13 @@ class UE4SSSettingsPage extends React.Component {
             ),
           );
 
-    const addRowInner = [
+    const addRow = ce('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' } },
       ce('input', {
         type: 'text', value: newFolder,
+        style: { flex: '1 1 auto', minWidth: 0 },
         onChange: (e) => this.setState({ newFolder: e.target.value }),
         placeholder: '../SharedMods',
       }),
-      ' ',
       Button ? ce(Button, {
         onClick: () => {
           const trimmed = newFolder.trim();
@@ -277,19 +277,14 @@ class UE4SSSettingsPage extends React.Component {
         Icon ? ce(Icon, { name: 'add' }) : null,
         ' Add',
       ) : null,
-      ' ',
       Button && typeof this.props.api.selectDir === 'function' ? ce(Button, {
         onClick: () => this.props.api.selectDir({ title: 'Select a UE4SS mods folder' })
           .then(p => { if (p) this.setState({ modFolders: this.state.modFolders.concat(p), dirty: true }); })
           .catch(() => null),
       }, 'Browse…') : null,
-    ];
+    );
 
-    const addRow = FlexLayout
-      ? ce(FlexLayout, { type: 'row' }, ...addRowInner)
-      : ce('div', null, ...addRowInner);
-
-    const foldersPanel = mkPanel('External mod folders (UE4SS +ModsFolderPaths)',
+    const foldersPanel = mkPanel('External mod folders (UE4SS +ModsFolderPaths)', { marginTop: '8px' },
       folderEntries,
       addRow,
     );
@@ -308,11 +303,8 @@ class UE4SSSettingsPage extends React.Component {
       renderingPanel,
       debugPanel,
       foldersPanel,
-      ce('div', { className: 'btn-toolbar' },
-        saveBtn,
-        ' ', refreshBtn,
-        ' ', openFolderBtn,
-        ' ', editFileBtn,
+      ce('div', { className: 'btn-toolbar', style: { marginTop: '16px', display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+        saveBtn, refreshBtn, openFolderBtn, editFileBtn,
       ),
     );
   }

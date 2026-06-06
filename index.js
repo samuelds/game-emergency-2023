@@ -5,7 +5,7 @@
  * into the UE4SS Mods folder.
  *
  * Grounded on the official Vortex docs (package/test/develop/submit wiki):
- *   - files info.json + gameart.png + index.js + lib/ at archive top-level
+ *   - files info.json + gameart.png + index.js + src/ at archive top-level
  *   - paths MUST be relative (no absolute drive letters)
  *   - create referenced dirs via fs.ensureDirWritableAsync
  *
@@ -32,7 +32,7 @@
  *     any download is started; user can cancel without side effects.
  *   - Grounded: repo UE4SS-RE/RE-UE4SS, tag experimental-latest (rolling), dest Binaries/Win64.
  *   - NOTE: 3.0.1 stable crashes EMERGENCY 2023 (UE5.3.2); experimental build required.
- *   - A Vortex settings page (lib/settings-page.js) lets users edit all [Debug] keys.
+ *   - A Vortex settings page (src/settings-page.js) lets users edit all [Debug] keys.
  *
  * ALL paths live-resolved via the in-game MCP (KismetSystemLibrary + io.popen dir, 2026-06-06).
  * Only remaining step = a real Vortex install/deploy/purge test on Windows.
@@ -46,15 +46,15 @@ try { reactBootstrap = require('react-bootstrap'); } catch (_) {}
 
 const {
   GAME_ID, STEAM_APP_ID, EXECUTABLE, BINARIES_WIN64, MOD_PATH, UE4SS_INJECTOR_MODTYPE, UE4SS_ASSET_PATTERN,
-} = require('./lib/constants');
-const { getIniValue, setIniValue, getIniListValues, setIniListValues } = require('./lib/ini');
+} = require('./src/constants');
+const { getIniValue, setIniValue, getIniListValues, setIniListValues } = require('./src/ini');
 const {
   isSafeRelPath, isTrustedUE4SSAsset,
   testUE4SSInjector, installUE4SSInjector,
   fetchLatestUE4SS, downloadUE4SS,
   isUE4SSInstalled, findSettingsFile, findGame,
-} = require('./lib/ue4ss');
-const UE4SSSettingsPage = require('./lib/settings-page');
+} = require('./src/ue4ss');
+const UE4SSSettingsPage = require('./src/settings-page');
 
 // ---------------------------------------------------------------------------
 // Main entry point
