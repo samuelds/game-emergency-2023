@@ -1,35 +1,108 @@
 # Vortex game extension — EMERGENCY 2023
 
-Adds **EMERGENCY 2023** to Vortex as a managed game so any UE4SS mod (e.g.
-[em-fast-boot](https://gitlab.com/em-modding/em-fast-boot)) installs in one click,
-instead of users hand-dropping files into `ue4ss/Mods`.
+Makes **EMERGENCY 2023** (Steam `850170`) a Vortex-managed game so any UE4SS mod
+(e.g. [em-fast-boot](https://gitlab.com/em-modding/em-fast-boot)) installs in one
+click instead of users hand-dropping files.
 
-Until this exists, the game has a Nexus **website** page but does **not** appear in
-the Vortex app (Vortex only lists games that have a game extension). This fills that gap.
+## Game detection
 
-## Files (top-level — no nested root folder, per Vortex packaging rules)
-- `info.json` — name / author / version (semver, must match the Nexus upload version) / description
-- `index.js` — registers the game, Steam detection (App ID **850170**), UE4SS mod path
-- `gameart.png` — ✅ the game key art (2048×1024), from the game's own login background (`Content/UI/Login/T_LoginBackground_BC`). Standard for Vortex game extensions (identifies the game visually).
+| Field | Value |
+|---|---|
+| Steam App ID | `850170` |
+| Install root | `…/steamapps/common/EMERGENCY/` |
+| Executable | `EMERGENCY.exe` (at install root) |
+| UE project | `<root>/EMERGENCY/` |
+| Managed mods path | `EMERGENCY/Binaries/Win64/Mods` (relative to root) |
 
-## ⚠ Windows field-test gaps (verify before submitting — see `index.js` G1–G3)
-1. **Executable** — exact `.exe` name + relative path in the Steam install. Placeholder: `EMERGENCY2023.exe`.
-2. **Mod path** — confirm UE4SS deploys to `<ProjectName>/Binaries/Win64/ue4ss/Mods` and the real `<ProjectName>`.
-3. **requiredFiles** — set to the confirmed exe.
-(Steam App ID `850170` is confirmed.)
+Detection uses `util.GameStoreHelper.findByAppId(['850170'])` — standard Vortex Steam detection.
 
-## Test (per the Vortex "How to test" guide)
-1. Zip the 3 files at top-level.
-2. Extract into `%APPDATA%\Vortex\Plugins\game-emergency2023\`.
-3. Restart Vortex → EMERGENCY 2023 should appear under **Games**, detect the Steam install,
-   and deploy a test mod (em-fast-boot) into the UE4SS Mods folder. Verify **purge** works too.
-4. Reviewer "80/20": the most popular mods should install correctly.
+## Mod deploy path
 
-## Submit (per the Vortex "How to submit" guide)
-1. Upload the extension archive to Nexus Mods (Vortex extension category), **version == `info.json` version**.
-2. Open the **Review Extension** form on the Vortex GitHub repo. A reviewer responds within ~5 working days.
-3. Increment the version on every re-upload.
+Mods are deployed into `EMERGENCY/Binaries/Win64/Mods` — the **flat** layout used by the
+official `UE4SS_v3.0.1.zip` (UE4SS extracts `dwmapi.dll`, `UE4SS-settings.ini`, and `Mods/`
+directly into `Binaries/Win64`; no `ue4ss/` subfolder).
+
+## UE4SS injector mod type
+
+A dedicated mod type (`emergency2023-ue4ss-injector`) handles UE4SS itself as a Vortex mod,
+deploying its files to `EMERGENCY/Binaries/Win64`.
+
+**Installer recognition** (`testUE4SSInjector`): any archive containing both `dwmapi.dll` and
+`UE4SS-settings.ini` (basename match — works for flat or legacy nested archives). Archives with
+absolute paths or `../` traversal are rejected.
+
+**At install time** (`installUE4SSInjector`): the `UE4SS-settings.ini` is patched to set
+`[Debug] GraphicsAPI = dx11` before deployment. EMERGENCY 2023 requires DirectX 11; the UE4SS
+default (`opengl`) causes a black screen. The patch is applied via `generatefile`; if the source
+INI cannot be read the file is copied unmodified as a fallback.
+
+## UE4SS auto-install
+
+On first launch (`setup` callback), if UE4SS is not already installed:
+
+1. **Guard** — `isUE4SSInstalled(root)` checks five markers in `Binaries/Win64`:
+   `dwmapi.dll`, `UE4SS.dll`, `UE4SS-settings.ini`, `ue4ss/UE4SS-settings.ini`,
+   `ue4ss/UE4SS.dll`. Any one present → skip. If `Binaries/Win64` itself is absent
+   (unexpected layout) → also skip (fail-safe, never clobbers).
+2. **Fetch** — queries `https://api.github.com/repos/UE4SS-RE/RE-UE4SS/releases/latest`
+   for the first asset matching `UE4SS_v*.zip`.
+3. **Trust check** — download URL must be `https://` from `github.com` or
+   `objects.githubusercontent.com`; asset name is re-validated against the pattern.
+   Untrusted URLs are silently dropped.
+4. **Consent dialog** — names the release tag and destination (`Binaries/Win64`) before
+   any download starts. User can cancel with no side effects.
+5. **Download + install** — fired via the standard Vortex `start-download` /
+   `start-install-download` event pipeline.
+
+## Settings page (Settings → UE4SS)
+
+A Vortex settings page (registered only when `react-bootstrap` is available and the game
+is discovered) lets users edit two fields in the deployed `UE4SS-settings.ini`:
+
+- **GraphicsAPI** — `dx11` (recommended) or `opengl`
+- **GuiConsoleEnabled** — enabled / disabled
+
+The page finds the settings file in the flat location first (`Binaries/Win64/UE4SS-settings.ini`),
+then falls back to the legacy nested location (`Binaries/Win64/ue4ss/UE4SS-settings.ini`).
+Changes are written back to the live INI file; a success notification confirms the save.
+
+## Files
+
+```
+vortex-emergency2023/
+├── info.json          ← extension metadata (name, version 1.0.0, description)
+├── index.js           ← plain JS, no build step required
+├── gameart.png        ← 2048×1024 key art (T_LoginBackground_BC)
+└── test/
+    └── index.test.js  ← offline unit tests (plain Node, no deps)
+```
+
+All logic is in plain JS. There is no build step and no npm dependencies.
+
+## Tests
+
+```bash
+node test/index.test.js   # 62/62 tests passed
+```
+
+Tests cover: `isSafeRelPath`, `isTrustedUE4SSAsset`, `testUE4SSInjector` (flat + nested),
+`getIniValue`, `setIniValue`, `installUE4SSInjector` (generatefile + fallback),
+`fetchLatestUE4SS` (HTTP stubs), `downloadUE4SS` (consent gate, H1 guard), `isUE4SSInstalled`
+(all 5 markers + fail-safe), `findSettingsFile`, `UE4SSSettingsPage` (load/save/render).
+
+## Build and submit
+
+1. Zip the three top-level files (`info.json`, `index.js`, `gameart.png`) — no subfolder.
+2. Upload to [nexusmods.com/site/mods](https://www.nexusmods.com/site/mods) (Vortex extension
+   category). The upload version **must match** `info.json` → `1.0.0`.
+3. Submit the **Review Extension** form on the Vortex GitHub repository.
+   A reviewer responds within ~5 working days. Increment `version` on every re-upload.
 
 ## Status
-Scaffolded offline, grounded on the official Vortex wiki (package/test/submit). The 3 gaps above + `gameart.png`
-are the only blockers — all Windows-side. Once confirmed, this is submit-ready.
+
+**Scaffolded + offline-tested (62) + live-validated** (extension loads, guard correctly skips
+auto-download on an existing UE4SS install, no clobber).
+
+**Pending before submit:**
+- Visual confirmation of the Settings page rendering inside Vortex on Windows
+- Fresh-install deploy/purge cycle (no existing UE4SS → auto-download → mod deploys to `Mods/` → purge cleans up)
