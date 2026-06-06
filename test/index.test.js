@@ -1,195 +1,650 @@
-/**
- * Offline unit tests for the EMERGENCY 2023 Vortex extension.
- * Run with: node test/index.test.js
- * No external dependencies — uses Module._load override to mock 'vortex-api'.
- */
 'use strict';
-
-const path = require('path');
 const Module = require('module');
+const assert = require('assert');
+const path   = require('path');
 
 // ---------------------------------------------------------------------------
-// Mock vortex-api before requiring index.js
+// Mocks — must be in place BEFORE require('../index.js')
 // ---------------------------------------------------------------------------
 
-const mockLog = () => {};
+// Minimal React mock (native class inheritance — no transpilation)
+const mockReact = {
+  Component: class Component {
+    constructor(props) { this.props = props || {}; this.state = {}; }
+    setState(partial) {
+      const next = typeof partial === 'function' ? partial(this.state) : partial;
+      Object.assign(this.state, next);
+    }
+  },
+  createElement(...args) {
+    return { type: args[0], props: args[1], children: args.slice(2) };
+  },
+};
+
+const mockRbs = {
+  Button: 'Button', ControlLabel: 'ControlLabel',
+  FormControl: 'FormControl', FormGroup: 'FormGroup', HelpBlock: 'HelpBlock',
+};
 
 const mockFs = {
   ensureDirWritableAsync: () => Promise.resolve(),
-  statAsync: () => Promise.resolve(),
+  statAsync:              () => Promise.resolve(),
+  readFileAsync:          () => Promise.resolve(''),
+  writeFileAsync:         () => Promise.resolve(),
 };
 
 const mockUtil = {
-  GameStoreHelper: {
-    findByAppId: () => Promise.resolve({ gamePath: '/game' }),
-  },
-  toPromise: (fn) => new Promise((resolve, reject) => fn((err, val) => err ? reject(err) : resolve(val))),
+  toPromise: (fn) => new Promise((res, rej) =>
+    fn((err, val) => (err ? rej(err) : res(val)))),
+  GameStoreHelper: { findByAppId: () => Promise.resolve({ gamePath: '/game' }) },
 };
 
-const originalLoad = Module._load.bind(Module);
-Module._load = function (request, parent, isMain) {
-  if (request === 'vortex-api') {
-    return { fs: mockFs, util: mockUtil, log: mockLog };
-  }
+const mockLog = () => {};
+
+// IMPORTANT: index.js captures the OBJECT REFERENCE returned by require('https').
+// Swapping the whole object has no effect after module load — mutate .get instead.
+const mockHttps = { get: (_u, _o, _cb) => ({ on: () => {} }) };
+
+// Override before loading the module under test
+const originalLoad = Module._load;
+Module._load = function(request, parent, isMain) {
+  if (request === 'vortex-api')      return { fs: mockFs, util: mockUtil, log: mockLog };
+  if (request === 'https')           return mockHttps;  // returns the same object every time
+  if (request === 'react')           return mockReact;
+  if (request === 'react-bootstrap') return mockRbs;
   return originalLoad(request, parent, isMain);
 };
 
-// ---------------------------------------------------------------------------
-// Load the extension
-// ---------------------------------------------------------------------------
-
-const ext = require('../index.js');
+const idx = require('../index.js');
+Module._load = originalLoad; // restore after load
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Shared state / context
 // ---------------------------------------------------------------------------
-
-let passed = 0;
-let failed = 0;
-
-function assert(condition, msg) {
-  if (condition) {
-    console.log('  ✓', msg);
-    passed++;
-  } else {
-    console.error('  ✗', msg);
-    failed++;
-  }
-}
-
-function assertEq(actual, expected, msg) {
-  if (actual === expected) {
-    console.log('  ✓', msg);
-    passed++;
-  } else {
-    console.error('  ✗', msg, '— expected', JSON.stringify(expected), 'got', JSON.stringify(actual));
-    failed++;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Build a mock context and invoke main()
-// ---------------------------------------------------------------------------
-
-let capturedGame = null;
-let capturedModTypes = [];
-let capturedInstallers = [];
-
-// Shared mock state used by injector modType getPath
 const mockState = {
   settings: {
     gameMode: {
-      discovered: {
-        emergency2023: { path: '/game' },
-      },
+      discovered: { emergency2023: { path: '/game' } },
     },
   },
 };
 
 const mockContext = {
   api: {
-    getState: () => mockState,
+    getState:         () => mockState,
     sendNotification: () => {},
+    showDialog:       () => Promise.resolve({ action: 'Download UE4SS' }),
     events: { emit: () => {} },
   },
-  registerGame(opts) { capturedGame = opts; },
-  registerModType(id, priority, isSupported, getPath, test, opts) {
-    capturedModTypes.push({ id, priority, isSupported, getPath, test, opts });
-  },
-  registerInstaller(id, priority, tester, installer) {
-    capturedInstallers.push({ id, priority, tester, installer });
-  },
+  registerModType:    () => {},
+  registerInstaller:  () => {},
+  registerGame:       () => {},
+  registerSettings:   () => {},
 };
 
-const result = ext.default(mockContext);
-
 // ---------------------------------------------------------------------------
-// Test suite
+// Runner
 // ---------------------------------------------------------------------------
+let passed = 0, failed = 0;
+const tests = [];
 
-console.log('\n=== registerGame ===');
-assert(capturedGame !== null, 'registerGame was called');
-assertEq(capturedGame.id, 'emergency2023', 'id === emergency2023');
-assertEq(capturedGame.executable(), 'EMERGENCY.exe', 'executable() === EMERGENCY.exe');
-assert(capturedGame.requiredFiles.includes('EMERGENCY.exe'), 'requiredFiles includes EMERGENCY.exe');
-assertEq(capturedGame.mergeMods, true, 'mergeMods === true');
-assertEq(capturedGame.details.steamAppId, 850170, 'details.steamAppId === 850170');
+function test(name, fn) {
+  tests.push(async () => {
+    try {
+      await fn();
+      console.log('  ✓ ' + name);
+      passed++;
+    } catch (err) {
+      console.log('  ✗ ' + name + ': ' + (err.stack || err.message));
+      failed++;
+    }
+  });
+}
 
-console.log('\n=== registerModType ===');
-const injectorModType = capturedModTypes.find(m => m.id === UE4SS_INJECTOR_MODTYPE_ID());
-assert(injectorModType !== undefined, 'registerModType called with id emergency2023-ue4ss-injector');
-assert(injectorModType.isSupported('emergency2023'), 'isSupported(emergency2023) === true');
-assert(!injectorModType.isSupported('otherwgame'), 'isSupported(othergame) === false');
-const expectedBinPath = path.join('/game', 'EMERGENCY', 'Binaries', 'Win64');
-const actualBinPath = injectorModType.getPath({ id: 'emergency2023' });
-assertEq(actualBinPath, expectedBinPath, 'getPath returns <root>/EMERGENCY/Binaries/Win64');
+/** Flush microtask + I/O queues enough for chained Promises to settle. */
+async function flushPromises() {
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setImmediate(r));
+  }
+}
 
-console.log('\n=== registerInstaller ===');
-const installer = capturedInstallers.find(i => i.id === 'emergency2023-ue4ss');
-assert(installer !== undefined, 'registerInstaller called with id emergency2023-ue4ss');
+/**
+ * Returns a synchronous fake https.get function.
+ * Assign to mockHttps.get — do NOT replace the mockHttps object itself (index.js
+ * captured the original object reference at load time; replacing it is a no-op).
+ */
+function makeHttpsGet(statusCode, bodyObj) {
+  return function(_url, _opts, cb) {
+    const handlers = {};
+    const res = {
+      statusCode,
+      on(ev, fn) { handlers[ev] = fn; return this; },
+    };
+    cb(res);
+    handlers['data'](typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj));
+    handlers['end']();
+    return { on: () => {} };
+  };
+}
 
-console.log('\n=== testUE4SSInjector ===');
-const { testUE4SSInjector, installUE4SSInjector, UE4SS_ASSET_PATTERN } = ext;
+// Convenience path constants used by multiple test groups
+const WIN64           = path.join('/game', 'EMERGENCY', 'Binaries', 'Win64');
+const FLAT_SETTINGS   = path.join(WIN64, 'UE4SS-settings.ini');
+const NESTED_SETTINGS = path.join(WIN64, 'ue4ss', 'UE4SS-settings.ini');
 
-// Use the captured tester (should be the same function, but test both)
-const tester = installer.tester;
+// ===========================================================================
+// 1. isSafeRelPath
+// ===========================================================================
+console.log('\nisSafeRelPath');
 
-Promise.all([
-  tester(['foo/ue4ss/UE4SS-settings.ini', 'dwmapi.dll'], 'emergency2023')
-    .then(r => {
-      assert(r.supported === true, 'tester: correct files + gameId → supported:true');
-    }),
-  tester(['foo/ue4ss/UE4SS-settings.ini', 'dwmapi.dll'], 'wronggame')
-    .then(r => {
-      assert(r.supported === false, 'tester: correct files + wrong gameId → supported:false');
-    }),
-  tester(['dwmapi.dll', 'ue4ss/Mods/'], 'emergency2023')
-    .then(r => {
-      assert(r.supported === false, 'tester: missing UE4SS-settings.ini → supported:false');
-    }),
-]).then(() => {
-  console.log('\n=== installUE4SSInjector ===');
-  return installer.installer(['dwmapi.dll', 'ue4ss/UE4SS-settings.ini', 'ue4ss/Mods/']);
-}).then(res => {
-  const copies = res.instructions.filter(i => i.type === 'copy');
-  const setmodtype = res.instructions.filter(i => i.type === 'setmodtype');
+test('allows plain filename',           () => assert.ok(idx.isSafeRelPath('dwmapi.dll')));
+test('allows nested rel path',          () => assert.ok(idx.isSafeRelPath('Mods/MyMod/main.lua')));
+test('allows Windows-style nested',     () => assert.ok(idx.isSafeRelPath('Mods\\MyMod\\main.lua')));
+test('rejects absolute /path',          () => assert.ok(!idx.isSafeRelPath('/abs/path')));
+test('rejects absolute C:\\',           () => assert.ok(!idx.isSafeRelPath('C:\\Windows\\System32')));
+test('rejects ../ traversal',           () => assert.ok(!idx.isSafeRelPath('../secret.txt')));
+test('rejects nested ../',              () => assert.ok(!idx.isSafeRelPath('Mods/../../etc/passwd')));
+test('rejects windows ..\\ traversal',  () => assert.ok(!idx.isSafeRelPath('Mods\\..\\..\\secret')));
+test('allows single dot prefix',        () => assert.ok(idx.isSafeRelPath('.hidden/file')));
 
-  // 'ue4ss/Mods/' ends with path.sep (or '/') — should be dropped
-  const dirEntry = 'ue4ss/Mods/';
-  const hasDirEntry = copies.some(i => i.source === dirEntry);
-  assert(!hasDirEntry, 'installUE4SSInjector: directory entries dropped');
-  assertEq(copies.length, 2, 'installUE4SSInjector: 2 copy instructions (dwmapi.dll + UE4SS-settings.ini)');
-  assertEq(setmodtype.length, 1, 'installUE4SSInjector: 1 setmodtype instruction');
-  assertEq(setmodtype[0].value, 'emergency2023-ue4ss-injector', 'setmodtype.value === emergency2023-ue4ss-injector');
+// ===========================================================================
+// 2. isTrustedUE4SSAsset
+// ===========================================================================
+console.log('\nisTrustedUE4SSAsset');
 
-  console.log('\n=== UE4SS_ASSET_PATTERN ===');
-  assert(UE4SS_ASSET_PATTERN.test('UE4SS_v3.0.1.zip'), 'matches UE4SS_v3.0.1.zip');
-  assert(UE4SS_ASSET_PATTERN.test('UE4SS_v3.0.1.ZIP'), 'matches case-insensitive UE4SS_v3.0.1.ZIP');
-  assert(!UE4SS_ASSET_PATTERN.test('zDEV-UE4SS_v3.0.1.zip'), 'rejects zDEV-UE4SS_v3.0.1.zip');
-  assert(!UE4SS_ASSET_PATTERN.test('zCustomGameConfigs.zip'), 'rejects zCustomGameConfigs.zip');
-  assert(!UE4SS_ASSET_PATTERN.test('zMapGenBP.zip'), 'rejects zMapGenBP.zip');
+test('accepts github.com asset', () => assert.ok(idx.isTrustedUE4SSAsset({
+  name: 'UE4SS_v3.0.1.zip',
+  browser_download_url: 'https://github.com/UE4SS-RE/RE-UE4SS/releases/download/v3.0.1/UE4SS_v3.0.1.zip',
+})));
+test('accepts objects.githubusercontent.com', () => assert.ok(idx.isTrustedUE4SSAsset({
+  name: 'UE4SS_v3.0.1.zip',
+  browser_download_url: 'https://objects.githubusercontent.com/releases/UE4SS_v3.0.1.zip',
+})));
+test('rejects http://', () => assert.ok(!idx.isTrustedUE4SSAsset({
+  name: 'UE4SS_v3.0.1.zip',
+  browser_download_url: 'http://github.com/releases/UE4SS_v3.0.1.zip',
+})));
+test('rejects untrusted host', () => assert.ok(!idx.isTrustedUE4SSAsset({
+  name: 'UE4SS_v3.0.1.zip',
+  browser_download_url: 'https://evil.com/UE4SS_v3.0.1.zip',
+})));
+test('rejects bad asset name', () => assert.ok(!idx.isTrustedUE4SSAsset({
+  name: 'evil.exe',
+  browser_download_url: 'https://github.com/UE4SS-RE/RE-UE4SS/releases/download/v3.0.1/evil.exe',
+})));
+test('rejects null asset', () => assert.ok(!idx.isTrustedUE4SSAsset(null)));
 
-  // Verify the literal pattern is present in the source file text
-  const fs_node = require('fs');
-  const src = fs_node.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
-  assert(src.includes('/^UE4SS_v[\\d.]+\\.zip$/i'), 'index.js source contains the literal regex /^UE4SS_v[\\d.]+\\.zip$/i');
+// ===========================================================================
+// 3. testUE4SSInjector  (A2 — flat layout + path safety)
+// ===========================================================================
+console.log('\ntestUE4SSInjector');
 
-  // main() return value
-  console.log('\n=== main() return value ===');
-  assertEq(result, true, 'main() returns true');
+test('rejects wrong gameId', () =>
+  idx.testUE4SSInjector(['dwmapi.dll', 'UE4SS-settings.ini'], 'other')
+    .then(r => assert.strictEqual(r.supported, false)));
+test('rejects archive with only dwmapi.dll (no settings file)', () =>
+  idx.testUE4SSInjector(['dwmapi.dll'], 'emergency2023')
+    .then(r => assert.strictEqual(r.supported, false)));
+test('rejects archive with only settings (no dwmapi.dll)', () =>
+  idx.testUE4SSInjector(['UE4SS-settings.ini'], 'emergency2023')
+    .then(r => assert.strictEqual(r.supported, false)));
+test('rejects path traversal anywhere in file list', () =>
+  idx.testUE4SSInjector(['dwmapi.dll', '../UE4SS-settings.ini'], 'emergency2023')
+    .then(r => assert.strictEqual(r.supported, false)));
+test('accepts nested layout (ue4ss/UE4SS-settings.ini)', () =>
+  idx.testUE4SSInjector(['dwmapi.dll', 'ue4ss/UE4SS-settings.ini', 'ue4ss/Mods/'], 'emergency2023')
+    .then(r => assert.strictEqual(r.supported, true)));
+test('accepts flat layout (UE4SS-settings.ini at archive root)', () =>
+  idx.testUE4SSInjector(['dwmapi.dll', 'UE4SS-settings.ini', 'Mods/'], 'emergency2023')
+    .then(r => assert.strictEqual(r.supported, true)));
+test('accepts flat layout with mod files under Mods/', () =>
+  idx.testUE4SSInjector(['dwmapi.dll', 'UE4SS-settings.ini', 'Mods/Shared/shared_logger.lua'], 'emergency2023')
+    .then(r => assert.strictEqual(r.supported, true)));
 
-}).then(() => {
-  console.log('\n-----------------------------');
-  console.log(`Results: ${passed} passed, ${failed} failed`);
-  if (failed > 0) process.exit(1);
-}).catch(err => {
-  console.error('Unexpected test error:', err);
-  process.exit(1);
+// ===========================================================================
+// 4. getIniValue  (Part D)
+// ===========================================================================
+console.log('\ngetIniValue');
+
+test('returns value for existing key', () => {
+  assert.strictEqual(
+    idx.getIniValue('[Debug]\nGraphicsAPI = opengl\n', 'Debug', 'GraphicsAPI'),
+    'opengl');
+});
+test('returns null when key absent from section', () => {
+  assert.strictEqual(
+    idx.getIniValue('[Debug]\nSomeOther = 1\n', 'Debug', 'GraphicsAPI'),
+    null);
+});
+test('returns null when section absent', () => {
+  assert.strictEqual(
+    idx.getIniValue('[Other]\nGraphicsAPI = opengl\n', 'Debug', 'GraphicsAPI'),
+    null);
+});
+test('case-insensitive section + key matching', () => {
+  assert.strictEqual(
+    idx.getIniValue('[debug]\ngraphicsapi = dx11\n', 'Debug', 'GraphicsAPI'),
+    'dx11');
+});
+test('skips commented-out lines', () => {
+  assert.strictEqual(
+    idx.getIniValue('[Debug]\n; GraphicsAPI = opengl\nGraphicsAPI = dx11\n', 'Debug', 'GraphicsAPI'),
+    'dx11');
 });
 
-// ---------------------------------------------------------------------------
-// Helper: re-derive the modType id from the source to keep test DRY
-// ---------------------------------------------------------------------------
-function UE4SS_INJECTOR_MODTYPE_ID() {
-  return 'emergency2023-ue4ss-injector';
-}
+// ===========================================================================
+// 5. setIniValue  (Part D)
+// ===========================================================================
+console.log('\nsetIniValue');
+
+test('replaces existing value in-place', () => {
+  const out = idx.setIniValue('[Debug]\nGraphicsAPI = opengl\n', 'Debug', 'GraphicsAPI', 'dx11');
+  assert.ok(out.includes('GraphicsAPI = dx11'), 'should contain new value');
+  assert.ok(!out.includes('opengl'),             'should not contain old value');
+});
+test('preserves unrelated keys in same section', () => {
+  const out = idx.setIniValue('[Debug]\nGuiConsoleEnabled = 1\nGraphicsAPI = opengl\n', 'Debug', 'GraphicsAPI', 'dx11');
+  assert.ok(out.includes('GuiConsoleEnabled = 1'));
+});
+test('inserts key when section exists but key is absent', () => {
+  const out = idx.setIniValue('[Debug]\nGuiConsoleEnabled = 1\n', 'Debug', 'GraphicsAPI', 'dx11');
+  assert.ok(out.includes('[Debug]'));
+  assert.ok(out.includes('GraphicsAPI = dx11'));
+  assert.ok(out.includes('GuiConsoleEnabled = 1'));
+});
+test('appends new section + key when section absent', () => {
+  const out = idx.setIniValue('[Other]\nFoo = bar\n', 'Debug', 'GraphicsAPI', 'dx11');
+  assert.ok(out.includes('[Debug]'));
+  assert.ok(out.includes('GraphicsAPI = dx11'));
+  assert.ok(out.includes('[Other]'));
+});
+test('handles empty content', () => {
+  const out = idx.setIniValue('', 'Debug', 'GraphicsAPI', 'dx11');
+  assert.ok(out.includes('[Debug]'));
+  assert.ok(out.includes('GraphicsAPI = dx11'));
+});
+test('handles key=value format (no spaces around =)', () => {
+  const out = idx.setIniValue('[Debug]\nGraphicsAPI=opengl\n', 'Debug', 'GraphicsAPI', 'dx11');
+  assert.ok(out.includes('dx11'));
+  assert.ok(!out.includes('opengl'));
+});
+test('round-trip: setIniValue result readable by getIniValue', () => {
+  const ini = '[Debug]\nGraphicsAPI = opengl\n';
+  const out = idx.setIniValue(ini, 'Debug', 'GraphicsAPI', 'dx11');
+  assert.strictEqual(idx.getIniValue(out, 'Debug', 'GraphicsAPI'), 'dx11');
+});
+
+// ===========================================================================
+// 6. installUE4SSInjector  (C1 — flat layout, generatefile, fallback)
+// ===========================================================================
+console.log('\ninstallUE4SSInjector');
+
+test('flat layout: patches settings -> generatefile, copies dwmapi.dll', () => {
+  const savedRead = mockFs.readFileAsync;
+  mockFs.readFileAsync = () => Promise.resolve('[Debug]\nGraphicsAPI = opengl\n');
+  return idx.installUE4SSInjector(['dwmapi.dll', 'UE4SS-settings.ini', 'Mods/'], '/dest')
+    .then(r => {
+      mockFs.readFileAsync = savedRead;
+      const copy   = r.instructions.find(i => i.type === 'copy'         && i.source === 'dwmapi.dll');
+      const genf   = r.instructions.find(i => i.type === 'generatefile');
+      const setmod = r.instructions.find(i => i.type === 'setmodtype');
+      assert.ok(copy,   'copy instruction for dwmapi.dll');
+      assert.ok(genf,   'generatefile instruction for settings');
+      assert.ok(setmod, 'setmodtype instruction');
+      assert.strictEqual(genf.destination, 'UE4SS-settings.ini');
+      const content = genf.data.toString('utf8');
+      assert.ok(content.includes('dx11'),    'patched content contains dx11');
+      assert.ok(!content.includes('opengl'), 'patched content has no opengl');
+      assert.strictEqual(setmod.value, 'emergency2023-ue4ss-injector');
+    });
+});
+test('falls back to plain copy when readFileAsync throws', () => {
+  const savedRead = mockFs.readFileAsync;
+  mockFs.readFileAsync = () => Promise.reject(new Error('ENOENT'));
+  return idx.installUE4SSInjector(['dwmapi.dll', 'UE4SS-settings.ini'], '/dest')
+    .then(r => {
+      mockFs.readFileAsync = savedRead;
+      assert.ok(!r.instructions.find(i => i.type === 'generatefile'),
+        'no generatefile on read error');
+      assert.ok(r.instructions.find(i => i.type === 'copy' && i.destination === 'UE4SS-settings.ini'),
+        'falls back to copy on read error');
+    });
+});
+test('filters out directory entries (trailing path sep) and traversal paths', () =>
+  idx.installUE4SSInjector(['dwmapi.dll', 'Mods/', '../evil.dll', 'Mods/mod.lua'], '/dest')
+    .then(r => {
+      assert.ok(!r.instructions.some(i => i.source === 'Mods/'),        'dir entry filtered');
+      assert.ok(!r.instructions.some(i => i.source === '../evil.dll'),  'traversal filtered');
+    }));
+test('setmodtype is always the last instruction', () => {
+  const savedRead = mockFs.readFileAsync;
+  mockFs.readFileAsync = () => Promise.resolve('[Debug]\n');
+  return idx.installUE4SSInjector(['dwmapi.dll', 'UE4SS-settings.ini'], '/dest')
+    .then(r => {
+      mockFs.readFileAsync = savedRead;
+      const last = r.instructions[r.instructions.length - 1];
+      assert.strictEqual(last.type, 'setmodtype');
+    });
+});
+
+// ===========================================================================
+// 7. fetchLatestUE4SS  (HTTP stubs + H1 URL validation)
+//
+// NOTE: index.js captures the mockHttps OBJECT at require() time.
+// Always mutate mockHttps.get — never replace the object itself.
+// ===========================================================================
+console.log('\nfetchLatestUE4SS');
+
+test('(c) selects UE4SS_vX.Y.Z.zip and skips zDEV variant', () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, {
+    tag_name: 'v3.0.1',
+    assets: [
+      { name: 'zDEV-UE4SS_v3.0.1.zip', browser_download_url: 'https://github.com/x' },
+      { name: 'UE4SS_v3.0.1.zip',       browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1.zip' },
+    ],
+  });
+  return idx.fetchLatestUE4SS().then(asset => {
+    mockHttps.get = savedGet;
+    assert.ok(asset, 'should return an asset');
+    assert.strictEqual(asset.name, 'UE4SS_v3.0.1.zip');
+    assert.strictEqual(asset.tag, 'v3.0.1');
+  });
+});
+test('(d) returns null on non-200 status', () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(404, 'Not Found');
+  return idx.fetchLatestUE4SS().then(asset => {
+    mockHttps.get = savedGet;
+    assert.strictEqual(asset, null);
+  });
+});
+test('returns null when release has no matching asset', () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, { tag_name: 'v3.0.1', assets: [] });
+  return idx.fetchLatestUE4SS().then(asset => {
+    mockHttps.get = savedGet;
+    assert.strictEqual(asset, null);
+  });
+});
+test('returns null when asset URL is untrusted (H1 re-validation)', () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, {
+    tag_name: 'v3.0.1',
+    assets: [{ name: 'UE4SS_v3.0.1.zip', browser_download_url: 'https://evil.com/UE4SS_v3.0.1.zip' }],
+  });
+  return idx.fetchLatestUE4SS().then(asset => {
+    mockHttps.get = savedGet;
+    assert.strictEqual(asset, null);
+  });
+});
+
+// ===========================================================================
+// 8. downloadUE4SS  (H2 — consent dialog)
+// ===========================================================================
+console.log('\ndownloadUE4SS (H2 consent)');
+
+test('aborts when no asset found (no dialog shown)', () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, { tag_name: 'v3.0.1', assets: [] });
+  let dialogCalled = false;
+  const savedDialog = mockContext.api.showDialog;
+  mockContext.api.showDialog = () => { dialogCalled = true; return Promise.resolve(null); };
+  return idx.downloadUE4SS(mockContext.api).then(() => {
+    mockHttps.get = savedGet;
+    mockContext.api.showDialog = savedDialog;
+    assert.ok(!dialogCalled, 'dialog must NOT be shown when no asset found');
+  });
+});
+test('aborts download when user clicks Cancel', () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, {
+    tag_name: 'v3.0.1',
+    assets: [{ name: 'UE4SS_v3.0.1.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1.zip' }],
+  });
+  const savedDialog = mockContext.api.showDialog;
+  mockContext.api.showDialog = () => Promise.resolve({ action: 'Cancel' });
+  let emitCalled = false;
+  const savedEmit = mockContext.api.events.emit;
+  mockContext.api.events.emit = () => { emitCalled = true; };
+  return idx.downloadUE4SS(mockContext.api).then(() => {
+    mockHttps.get = savedGet;
+    mockContext.api.showDialog = savedDialog;
+    mockContext.api.events.emit = savedEmit;
+    assert.ok(!emitCalled, 'start-download must NOT be emitted on Cancel');
+  });
+});
+test('starts download + install when user confirms', () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, {
+    tag_name: 'v3.0.1',
+    assets: [{ name: 'UE4SS_v3.0.1.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1.zip' }],
+  });
+  const savedDialog = mockContext.api.showDialog;
+  mockContext.api.showDialog = () => Promise.resolve({ action: 'Download UE4SS' });
+  const emitted = [];
+  const savedEmit = mockContext.api.events.emit;
+  mockContext.api.events.emit = (ev, ...args) => {
+    emitted.push(ev);
+    if (ev === 'start-download')         { const cb = args[3]; if (cb) cb(null, 'dl-id-1'); }
+    if (ev === 'start-install-download') { const cb = args[2]; if (cb) cb(null); }
+  };
+  return idx.downloadUE4SS(mockContext.api).then(() => {
+    mockHttps.get = savedGet;
+    mockContext.api.showDialog = savedDialog;
+    mockContext.api.events.emit = savedEmit;
+    assert.ok(emitted.includes('start-download'),         'start-download emitted');
+    assert.ok(emitted.includes('start-install-download'), 'start-install-download emitted');
+  });
+});
+test('dialog text names the release tag + Binaries/Win64', () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, {
+    tag_name: 'v3.0.1',
+    assets: [{ name: 'UE4SS_v3.0.1.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1.zip' }],
+  });
+  let dialogText = '';
+  const savedDialog = mockContext.api.showDialog;
+  mockContext.api.showDialog = (_type, _title, body) => {
+    dialogText = body.text || '';
+    return Promise.resolve({ action: 'Cancel' });
+  };
+  return idx.downloadUE4SS(mockContext.api).then(() => {
+    mockHttps.get = savedGet;
+    mockContext.api.showDialog = savedDialog;
+    assert.ok(dialogText.includes('v3.0.1'),        'tag in dialog text');
+    assert.ok(dialogText.includes('Binaries/Win64'), 'destination in dialog text');
+  });
+});
+test('skips download for untrusted asset URL (H1 guard)', () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, {
+    tag_name: 'v3.0.1',
+    assets: [{ name: 'UE4SS_v3.0.1.zip', browser_download_url: 'https://evil.com/UE4SS_v3.0.1.zip' }],
+  });
+  let dialogCalled = false;
+  const savedDialog = mockContext.api.showDialog;
+  mockContext.api.showDialog = () => { dialogCalled = true; return Promise.resolve(null); };
+  return idx.downloadUE4SS(mockContext.api).then(() => {
+    mockHttps.get = savedGet;
+    mockContext.api.showDialog = savedDialog;
+    assert.ok(!dialogCalled, 'dialog must NOT be shown for untrusted URL');
+  });
+});
+
+// ===========================================================================
+// 9. isUE4SSInstalled  (B1 — robust fail-safe guard)
+// ===========================================================================
+console.log('\nisUE4SSInstalled');
+
+test('(a) returns true when dwmapi.dll present (flat layout)', async () => {
+  const saved = mockFs.statAsync;
+  mockFs.statAsync = (p) =>
+    (p === WIN64 || p === path.join(WIN64, 'dwmapi.dll'))
+      ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  const result = await idx.isUE4SSInstalled('/game');
+  mockFs.statAsync = saved;
+  assert.strictEqual(result, true);
+});
+test('returns true when UE4SS-settings.ini present (flat layout)', async () => {
+  const saved = mockFs.statAsync;
+  mockFs.statAsync = (p) =>
+    (p === WIN64 || p === path.join(WIN64, 'UE4SS-settings.ini'))
+      ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  const result = await idx.isUE4SSInstalled('/game');
+  mockFs.statAsync = saved;
+  assert.strictEqual(result, true);
+});
+test('returns true when UE4SS.dll present (flat layout)', async () => {
+  const saved = mockFs.statAsync;
+  mockFs.statAsync = (p) =>
+    (p === WIN64 || p === path.join(WIN64, 'UE4SS.dll'))
+      ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  const result = await idx.isUE4SSInstalled('/game');
+  mockFs.statAsync = saved;
+  assert.strictEqual(result, true);
+});
+test('returns true when nested ue4ss/UE4SS.dll present (legacy layout)', async () => {
+  const saved = mockFs.statAsync;
+  mockFs.statAsync = (p) =>
+    (p === WIN64 || p === path.join(WIN64, 'ue4ss', 'UE4SS.dll'))
+      ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  const result = await idx.isUE4SSInstalled('/game');
+  mockFs.statAsync = saved;
+  assert.strictEqual(result, true);
+});
+test('(b) returns false when Win64 exists but all markers absent', async () => {
+  const saved = mockFs.statAsync;
+  mockFs.statAsync = (p) =>
+    p === WIN64 ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  const result = await idx.isUE4SSInstalled('/game');
+  mockFs.statAsync = saved;
+  assert.strictEqual(result, false);
+});
+test('returns true (fail-safe) when Binaries/Win64 itself is absent', async () => {
+  const saved = mockFs.statAsync;
+  mockFs.statAsync = () => Promise.reject(new Error('ENOENT'));
+  const result = await idx.isUE4SSInstalled('/game');
+  mockFs.statAsync = saved;
+  assert.strictEqual(result, true);
+});
+
+// ===========================================================================
+// 10. findSettingsFile  (E2)
+// ===========================================================================
+console.log('\nfindSettingsFile');
+
+test('returns flat path when flat settings file exists', async () => {
+  const saved = mockFs.statAsync;
+  mockFs.statAsync = (p) =>
+    p === FLAT_SETTINGS ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  const result = await idx.findSettingsFile('/game');
+  mockFs.statAsync = saved;
+  assert.strictEqual(result, FLAT_SETTINGS);
+});
+test('returns nested path when only nested settings file exists', async () => {
+  const saved = mockFs.statAsync;
+  mockFs.statAsync = (p) =>
+    p === NESTED_SETTINGS ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  const result = await idx.findSettingsFile('/game');
+  mockFs.statAsync = saved;
+  assert.strictEqual(result, NESTED_SETTINGS);
+});
+test('returns null when neither flat nor nested file exists', async () => {
+  const saved = mockFs.statAsync;
+  mockFs.statAsync = () => Promise.reject(new Error('ENOENT'));
+  const result = await idx.findSettingsFile('/game');
+  mockFs.statAsync = saved;
+  assert.strictEqual(result, null);
+});
+
+// ===========================================================================
+// 11. UE4SSSettingsPage  (E3 — React class component)
+// ===========================================================================
+console.log('\nUE4SSSettingsPage');
+
+test('render(): shows loading text before load completes', () => {
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state.loaded = false;
+  const el = inst.render();
+  assert.ok(el, 'render() should return an element');
+  const text = (el.children || []).join(' ');
+  assert.ok(text.toLowerCase().includes('loading'), 'should include loading text');
+});
+test('render(): shows "not installed" message when settingsPath is null', () => {
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = { loaded: true, settingsPath: null, error: null, graphicsAPI: 'dx11', guiConsole: true, dirty: false };
+  const el = inst.render();
+  assert.ok(el, 'render() should return an element');
+  const text = (el.children || []).join(' ').toLowerCase();
+  assert.ok(text.includes('not installed') || text.includes('install'),
+    'should mention not-installed state');
+});
+test('render(): shows error message when error is set', () => {
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = { loaded: true, settingsPath: null, error: 'Kaboom!', graphicsAPI: 'dx11', guiConsole: true, dirty: false };
+  const el = inst.render();
+  const text = (el.children || []).join(' ');
+  assert.ok(text.includes('Kaboom!'), 'should include the error message');
+});
+test('render(): returns a div when fully loaded with a settingsPath', () => {
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = { loaded: true, settingsPath: FLAT_SETTINGS, error: null, graphicsAPI: 'dx11', guiConsole: true, dirty: false };
+  const el = inst.render();
+  assert.ok(el, 'render() should return an element');
+  assert.strictEqual(el.type, 'div', 'outermost element should be a div');
+});
+test('load(): reads INI and populates state correctly', async () => {
+  const savedStat = mockFs.statAsync;
+  const savedRead = mockFs.readFileAsync;
+  mockFs.statAsync     = (p) => p === FLAT_SETTINGS ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync = () => Promise.resolve('[Debug]\nGraphicsAPI = dx11\nGuiConsoleEnabled = 0\n');
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.load();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  assert.strictEqual(inst.state.graphicsAPI,  'dx11',        'graphicsAPI loaded from INI');
+  assert.strictEqual(inst.state.guiConsole,   false,         'guiConsole is false when INI value is 0');
+  assert.strictEqual(inst.state.loaded,       true,          'loaded flag is true');
+  assert.strictEqual(inst.state.settingsPath, FLAT_SETTINGS, 'settingsPath resolved to flat path');
+});
+test('save(): patches INI, writes file, and sends success notification', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writtenContent = null;
+  mockFs.statAsync      = (p) => p === FLAT_SETTINGS ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync  = () => Promise.resolve('[Debug]\nGraphicsAPI = opengl\nGuiConsoleEnabled = 1\n');
+  mockFs.writeFileAsync = (_p, c) => { writtenContent = c; return Promise.resolve(); };
+  let notifSent = false;
+  const savedNotif = mockContext.api.sendNotification;
+  mockContext.api.sendNotification = () => { notifSent = true; };
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11', guiConsole: false,
+    loaded: true, dirty: true, error: null,
+  };
+  inst.save();
+  await flushPromises();
+  mockFs.statAsync              = savedStat;
+  mockFs.readFileAsync          = savedRead;
+  mockFs.writeFileAsync         = savedWrite;
+  mockContext.api.sendNotification = savedNotif;
+  assert.ok(writtenContent,                          'writeFileAsync was called');
+  assert.ok(writtenContent.includes('dx11'),         'written content has dx11');
+  assert.ok(writtenContent.includes('GuiConsoleEnabled'), 'written content has GuiConsoleEnabled');
+  assert.ok(notifSent,                               'success notification was sent');
+});
+
+// ===========================================================================
+// Runner
+// ===========================================================================
+(async () => {
+  for (const t of tests) await t();
+  console.log('\n' + passed + '/' + (passed + failed) + ' tests passed.');
+  if (failed > 0) process.exit(1);
+})().catch(err => {
+  console.error('Runner error:', err);
+  process.exit(1);
+});
