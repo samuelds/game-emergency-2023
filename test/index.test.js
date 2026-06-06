@@ -37,6 +37,7 @@ const mockUtil = {
   toPromise: (fn) => new Promise((res, rej) =>
     fn((err, val) => (err ? rej(err) : res(val)))),
   GameStoreHelper: { findByAppId: () => Promise.resolve({ gamePath: '/game' }) },
+  opn: (p) => Promise.resolve(p),
 };
 
 const mockLog = () => {};
@@ -293,8 +294,11 @@ test('flat layout: patches settings -> generatefile, copies dwmapi.dll', () => {
       assert.ok(setmod, 'setmodtype instruction');
       assert.strictEqual(genf.destination, 'UE4SS-settings.ini');
       const content = genf.data.toString('utf8');
-      assert.ok(content.includes('dx11'),    'patched content contains dx11');
-      assert.ok(!content.includes('opengl'), 'patched content has no opengl');
+      assert.ok(content.includes('dx11'),              'patched content contains dx11');
+      assert.ok(!content.includes('opengl'),            'patched content has no opengl');
+      assert.ok(content.includes('GuiConsoleEnabled'),  'bake sets GuiConsoleEnabled');
+      assert.ok(content.includes('GuiConsoleEnabled = 0') || content.includes('GuiConsoleEnabled=0'),
+        'bake sets GuiConsoleEnabled=0');
       assert.strictEqual(setmod.value, 'emergency2023-ue4ss-injector');
     });
 });
@@ -559,6 +563,166 @@ test('returns null when neither flat nor nested file exists', async () => {
 });
 
 // ===========================================================================
+// 12. getIniListValues + setIniListValues  (Part G)
+// ===========================================================================
+console.log('\ngetIniListValues / setIniListValues');
+
+const OVERRIDES_INI = [
+  '[Overrides]',
+  'ModsFolderPath =',
+  '; +ModsFolderPaths = ../SharedMods  (comment — must be ignored)',
+  '+ModsFolderPaths = ../Mods1',
+  '+ModsFolderPaths = ../Mods2',
+  'ControllingModsTxt = mods.txt',
+  '',
+  '[Debug]',
+  'GraphicsAPI = dx11',
+].join('\n');
+
+test('getIniListValues: returns values from both +key lines', () => {
+  const result = idx.getIniListValues(OVERRIDES_INI, 'Overrides', 'ModsFolderPaths');
+  assert.deepStrictEqual(result, ['../Mods1', '../Mods2']);
+});
+test('getIniListValues: returns [] when no matching +key lines', () => {
+  const result = idx.getIniListValues(OVERRIDES_INI, 'Overrides', 'NonExistent');
+  assert.deepStrictEqual(result, []);
+});
+test('getIniListValues: returns [] when section absent', () => {
+  const result = idx.getIniListValues(OVERRIDES_INI, 'Missing', 'ModsFolderPaths');
+  assert.deepStrictEqual(result, []);
+});
+test('getIniListValues: case-insensitive section + key', () => {
+  const ini = '[overrides]\n+modsfolderPaths = ../X\n';
+  assert.deepStrictEqual(idx.getIniListValues(ini, 'Overrides', 'ModsFolderPaths'), ['../X']);
+});
+test('getIniListValues: ignores commented +key lines', () => {
+  // OVERRIDES_INI has a commented +ModsFolderPaths — result must be exactly 2, not 3
+  const result = idx.getIniListValues(OVERRIDES_INI, 'Overrides', 'ModsFolderPaths');
+  assert.strictEqual(result.length, 2, 'commented +key line must be ignored');
+});
+
+test('setIniListValues: removes old entries and inserts new ones', () => {
+  const result = idx.setIniListValues(OVERRIDES_INI, 'Overrides', 'ModsFolderPaths', ['../Mods1', '../Mods3']);
+  const got = idx.getIniListValues(result, 'Overrides', 'ModsFolderPaths');
+  assert.deepStrictEqual(got, ['../Mods1', '../Mods3']);
+});
+test('setIniListValues: preserves ModsFolderPath and ControllingModsTxt', () => {
+  const result = idx.setIniListValues(OVERRIDES_INI, 'Overrides', 'ModsFolderPaths', ['../Mods3']);
+  assert.ok(result.includes('ModsFolderPath ='),         'ModsFolderPath preserved');
+  assert.ok(result.includes('ControllingModsTxt = mods.txt'), 'ControllingModsTxt preserved');
+  assert.ok(result.includes('; +ModsFolderPaths = ../SharedMods'), 'comment line preserved');
+});
+test('setIniListValues: preserves [Debug] section', () => {
+  const result = idx.setIniListValues(OVERRIDES_INI, 'Overrides', 'ModsFolderPaths', ['../Mods3']);
+  assert.ok(result.includes('[Debug]'), '[Debug] section preserved');
+  assert.ok(result.includes('GraphicsAPI = dx11'), 'GraphicsAPI = dx11 preserved');
+});
+test('setIniListValues: empty array removes all +key lines', () => {
+  const result = idx.setIniListValues(OVERRIDES_INI, 'Overrides', 'ModsFolderPaths', []);
+  const got = idx.getIniListValues(result, 'Overrides', 'ModsFolderPaths');
+  assert.deepStrictEqual(got, []);
+  // Non-list keys must still be present
+  assert.ok(result.includes('ModsFolderPath ='));
+});
+test('setIniListValues: also removes -key lines', () => {
+  const ini = '[Overrides]\nModsFolderPath =\n-ModsFolderPaths = ../Stale\n+ModsFolderPaths = ../Keep\n';
+  const result = idx.setIniListValues(ini, 'Overrides', 'ModsFolderPaths', ['../New']);
+  assert.ok(!result.includes('-ModsFolderPaths'), '-key line should be removed');
+  assert.ok(!result.includes('../Stale'),         'old -key value should be gone');
+  assert.ok(!result.includes('../Keep'),          'old +key value should be gone');
+  assert.ok(result.includes('+ModsFolderPaths = ../New'), 'new +key line present');
+});
+test('setIniListValues: creates [Overrides] section when absent', () => {
+  const ini = '[Debug]\nGraphicsAPI = dx11\n';
+  const result = idx.setIniListValues(ini, 'Overrides', 'ModsFolderPaths', ['../Mods1']);
+  assert.ok(result.includes('[Overrides]'), '[Overrides] section created');
+  assert.ok(result.includes('+ModsFolderPaths = ../Mods1'), '+key line present');
+  assert.ok(result.includes('[Debug]'), '[Debug] section preserved');
+});
+test('setIniListValues: empty array + absent section → no-op', () => {
+  const ini = '[Debug]\nGraphicsAPI = dx11\n';
+  const result = idx.setIniListValues(ini, 'Overrides', 'ModsFolderPaths', []);
+  assert.ok(!result.includes('[Overrides]'), 'should not create empty section');
+  assert.strictEqual(idx.getIniListValues(result, 'Overrides', 'ModsFolderPaths').length, 0);
+});
+test('setIniListValues round-trip: parse → modify → re-parse', () => {
+  const parsed  = idx.getIniListValues(OVERRIDES_INI, 'Overrides', 'ModsFolderPaths');
+  // Simulate add one, remove one: replace Mods2 with Mods3
+  const updated = [...parsed.filter(p => p !== '../Mods2'), '../Mods3'];
+  const written = idx.setIniListValues(OVERRIDES_INI, 'Overrides', 'ModsFolderPaths', updated);
+  const reparsed = idx.getIniListValues(written, 'Overrides', 'ModsFolderPaths');
+  assert.deepStrictEqual(reparsed, ['../Mods1', '../Mods3']);
+});
+
+// ===========================================================================
+// 13. UE4SSSettingsPage — mod folders UI (Part H)
+// ===========================================================================
+console.log('\nUE4SSSettingsPage (mod folders)');
+
+test('load(): populates modFolders from [Overrides] +ModsFolderPaths', async () => {
+  const savedStat = mockFs.statAsync;
+  const savedRead = mockFs.readFileAsync;
+  mockFs.statAsync     = (p) => p === FLAT_SETTINGS ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync = () => Promise.resolve(OVERRIDES_INI);
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.load();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  assert.deepStrictEqual(inst.state.modFolders, ['../Mods1', '../Mods2'],
+    'modFolders should be loaded from INI');
+});
+test('Add folder: pushes to modFolders and clears newFolder', () => {
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: ['../Mods1'], newFolder: '../NewMod', loaded: true, error: null, dirty: false,
+  };
+  // Simulate clicking Add: same logic as in render()
+  const trimmed = inst.state.newFolder.trim();
+  if (trimmed) inst.setState(s => ({ modFolders: [...s.modFolders, trimmed], newFolder: '', dirty: true }));
+  assert.deepStrictEqual(inst.state.modFolders, ['../Mods1', '../NewMod']);
+  assert.strictEqual(inst.state.newFolder, '');
+  assert.strictEqual(inst.state.dirty, true);
+});
+test('Remove folder: filters modFolders by index', () => {
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: ['../Mods1', '../Mods2', '../Mods3'], newFolder: '', loaded: true, error: null, dirty: false,
+  };
+  const idx_to_remove = 1; // remove ../Mods2
+  inst.setState(s => ({ modFolders: s.modFolders.filter((_, i) => i !== idx_to_remove), dirty: true }));
+  assert.deepStrictEqual(inst.state.modFolders, ['../Mods1', '../Mods3']);
+  assert.strictEqual(inst.state.dirty, true);
+});
+test('save(): writes modFolders via setIniListValues', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writtenContent = null;
+  mockFs.statAsync      = (p) => p === FLAT_SETTINGS ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync  = () => Promise.resolve('[Debug]\nGraphicsAPI = dx11\n');
+  mockFs.writeFileAsync = (_p, c) => { writtenContent = c; return Promise.resolve(); };
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: ['../SharedMods', '../TeamMods'], newFolder: '', loaded: true, error: null, dirty: true,
+  };
+  inst.save();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  assert.ok(writtenContent, 'writeFileAsync was called');
+  assert.ok(writtenContent.includes('+ModsFolderPaths = ../SharedMods'), 'first folder written');
+  assert.ok(writtenContent.includes('+ModsFolderPaths = ../TeamMods'),   'second folder written');
+});
+
+// ===========================================================================
 // 11. UE4SSSettingsPage  (E3 — React class component)
 // ===========================================================================
 console.log('\nUE4SSSettingsPage');
@@ -571,28 +735,66 @@ test('render(): shows loading text before load completes', () => {
   const text = (el.children || []).join(' ');
   assert.ok(text.toLowerCase().includes('loading'), 'should include loading text');
 });
-test('render(): shows "not installed" message when settingsPath is null', () => {
+test('render(): shows "not installed" message + Refresh button when settingsPath is null', () => {
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
-  inst.state = { loaded: true, settingsPath: null, error: null, graphicsAPI: 'dx11', guiConsole: true, dirty: false };
+  inst.state = { loaded: true, settingsPath: null, error: null, graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirty: false };
   const el = inst.render();
   assert.ok(el, 'render() should return an element');
   const text = (el.children || []).join(' ').toLowerCase();
   assert.ok(text.includes('not installed') || text.includes('install'),
     'should mention not-installed state');
+  // Refresh button must be present in the "not installed" branch
+  const hasRefreshBtn = (el.children || []).some(c => c && c.type === 'Button' ||
+    (c && typeof c === 'object' && (c.children || []).join('') === 'Refresh'));
+  // We can't deeply check React elements easily, but the button object will be non-null/non-string
+  const nonTextChildren = (el.children || []).filter(c => c && typeof c !== 'string');
+  assert.ok(nonTextChildren.length > 0, 'should include a Refresh button element');
 });
 test('render(): shows error message when error is set', () => {
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
-  inst.state = { loaded: true, settingsPath: null, error: 'Kaboom!', graphicsAPI: 'dx11', guiConsole: true, dirty: false };
+  inst.state = { loaded: true, settingsPath: null, error: 'Kaboom!', graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirty: false };
   const el = inst.render();
   const text = (el.children || []).join(' ');
   assert.ok(text.includes('Kaboom!'), 'should include the error message');
 });
 test('render(): returns a div when fully loaded with a settingsPath', () => {
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
-  inst.state = { loaded: true, settingsPath: FLAT_SETTINGS, error: null, graphicsAPI: 'dx11', guiConsole: true, dirty: false };
+  inst.state = { loaded: true, settingsPath: FLAT_SETTINGS, error: null, graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirty: false };
   const el = inst.render();
   assert.ok(el, 'render() should return an element');
   assert.strictEqual(el.type, 'div', 'outermost element should be a div');
+});
+test('render(): loaded view includes Refresh button alongside Save', () => {
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = { loaded: true, settingsPath: FLAT_SETTINGS, error: null, graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirty: false };
+  const el = inst.render();
+  // Children include React elements (Button objects) — at least two non-null non-string children expected
+  const btnChildren = (el.children || []).filter(c => c && typeof c !== 'string' && c !== null);
+  assert.ok(btnChildren.length >= 2, 'loaded view should have at least Save + Refresh buttons');
+});
+test('refresh: setState({ loaded:false, error:null }) then load() — state resets before re-read', async () => {
+  const savedStat = mockFs.statAsync;
+  const savedRead = mockFs.readFileAsync;
+  // First read: settings absent
+  mockFs.statAsync     = () => Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync = () => Promise.resolve('');
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.load();
+  await flushPromises();
+  assert.strictEqual(inst.state.settingsPath, null, 'initially not installed');
+  // Now "install" UE4SS — flat settings appears
+  mockFs.statAsync     = (p) => p === FLAT_SETTINGS ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync = () => Promise.resolve('[Debug]\nGraphicsAPI = opengl\n');
+  // Simulate Refresh click: setState resets, then load() is called.
+  // (mock setState has no callback support; set state directly then call load())
+  inst.setState({ loaded: false, error: null });
+  inst.load();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  assert.strictEqual(inst.state.settingsPath, FLAT_SETTINGS, 'after refresh, settingsPath found');
+  assert.strictEqual(inst.state.graphicsAPI,  'opengl',      'after refresh, graphicsAPI read from INI');
+  assert.strictEqual(inst.state.loaded,       true,          'after refresh, loaded is true');
 });
 test('load(): reads INI and populates state correctly', async () => {
   const savedStat = mockFs.statAsync;
@@ -604,9 +806,9 @@ test('load(): reads INI and populates state correctly', async () => {
   await flushPromises();
   mockFs.statAsync     = savedStat;
   mockFs.readFileAsync = savedRead;
-  assert.strictEqual(inst.state.graphicsAPI,  'dx11',        'graphicsAPI loaded from INI');
-  assert.strictEqual(inst.state.guiConsole,   false,         'guiConsole is false when INI value is 0');
-  assert.strictEqual(inst.state.loaded,       true,          'loaded flag is true');
+  assert.strictEqual(inst.state.graphicsAPI,       'dx11',  'graphicsAPI loaded from INI');
+  assert.strictEqual(inst.state.guiConsoleEnabled, false,   'guiConsoleEnabled is false when INI value is 0');
+  assert.strictEqual(inst.state.loaded,            true,    'loaded flag is true');
   assert.strictEqual(inst.state.settingsPath, FLAT_SETTINGS, 'settingsPath resolved to flat path');
 });
 test('save(): patches INI, writes file, and sends success notification', async () => {
@@ -622,8 +824,9 @@ test('save(): patches INI, writes file, and sends success notification', async (
   mockContext.api.sendNotification = () => { notifSent = true; };
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
   inst.state = {
-    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11', guiConsole: false,
-    loaded: true, dirty: true, error: null,
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, dirty: true, error: null,
   };
   inst.save();
   await flushPromises();

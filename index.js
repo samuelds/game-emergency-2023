@@ -172,6 +172,96 @@ function setIniValue(content, section, key, value) {
 }
 
 // ---------------------------------------------------------------------------
+// Part G — INI list-value helpers (TDD-tested; used by settings page for
+//          [Overrides] +ModsFolderPaths)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns an array of values from every `+<key> = <value>` line under [section].
+ * Case-insensitive section + key; comment lines (`;`/`#`) are ignored.
+ * Returns [] if the section or key is absent.
+ */
+function getIniListValues(content, section, key) {
+  const lines   = content.split(/\r?\n/);
+  const secPat  = new RegExp('^\\s*\\[' + escRegex(section) + '\\]\\s*$', 'i');
+  const addPat  = new RegExp('^\\s*\\+\\s*' + escRegex(key) + '\\s*=(.*)', 'i');
+  let inSection = false;
+  const result  = [];
+  for (const line of lines) {
+    if (/^\s*[;#]/.test(line)) continue;
+    if (/^\s*\[/.test(line)) { inSection = secPat.test(line); continue; }
+    if (inSection) {
+      const m = line.match(addPat);
+      if (m) result.push(m[1].trim());
+    }
+  }
+  return result;
+}
+
+/**
+ * Returns new INI content where ALL existing `+<key>` and `-<key>` lines under
+ * [section] are removed, and one `+<key> = <value>` line per entry in `valuesArray`
+ * is inserted at the end of [section] (after the last non-blank line, before the next
+ * [header]).  Everything else — comments, other keys, other sections — is preserved.
+ *
+ * If [section] doesn't exist and valuesArray is non-empty, the section is appended.
+ * If valuesArray is empty, the existing +/-<key> lines are simply removed.
+ */
+function setIniListValues(content, section, key, valuesArray) {
+  const lines      = content.split(/\r?\n/);
+  const secPat     = new RegExp('^\\s*\\[' + escRegex(section) + '\\]\\s*$', 'i');
+  const listKeyPat = new RegExp('^\\s*[+-]\\s*' + escRegex(key) + '\\s*=', 'i');
+
+  let inSection       = false;
+  let sectionFound    = false;
+  let sectionEndIdx   = -1; // insert-before position in filtered (after last non-blank line)
+  let lastContentIdx  = -1; // index of last non-blank pushed line while in section
+
+  const filtered = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line      = lines[i];
+    const isComment = /^\s*[;#]/.test(line);
+    const isHeader  = !isComment && /^\s*\[/.test(line);
+
+    if (isHeader) {
+      if (inSection) {
+        // End of target section: insertion point = just after last non-blank content
+        sectionEndIdx = lastContentIdx >= 0 ? lastContentIdx + 1 : filtered.length;
+      }
+      inSection = secPat.test(line);
+      if (inSection) { sectionFound = true; lastContentIdx = -1; }
+      filtered.push(line);
+      continue;
+    }
+
+    // Remove existing +key / -key lines from the target section
+    if (inSection && !isComment && listKeyPat.test(line)) continue;
+
+    // Track last non-blank pushed line inside the section (comments included)
+    if (inSection && line.trim() !== '') lastContentIdx = filtered.length;
+    filtered.push(line);
+  }
+
+  // Section ends at EOF
+  if (inSection) {
+    sectionEndIdx = lastContentIdx >= 0 ? lastContentIdx + 1 : filtered.length;
+  }
+
+  if (sectionFound) {
+    // Insert new +key lines at computed position
+    filtered.splice(sectionEndIdx, 0, ...valuesArray.map(v => '+' + key + ' = ' + v));
+  } else if (valuesArray.length > 0) {
+    // Append new section block
+    while (filtered.length > 0 && filtered[filtered.length - 1].trim() === '') filtered.pop();
+    filtered.push('', '[' + section + ']');
+    for (const v of valuesArray) filtered.push('+' + key + ' = ' + v);
+  }
+
+  return filtered.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // H3 — Path safety guard (used by installer + tester)
 // ---------------------------------------------------------------------------
 
@@ -232,11 +322,11 @@ function installUE4SSInjector(files, destinationPath) {
     const base = path.basename(f).toLowerCase();
     if (base === 'ue4ss-settings.ini') {
       return fs.readFileAsync(path.join(destinationPath, f), 'utf8')
-        .then(content => ({
-          type: 'generatefile',
-          data: Buffer.from(setIniValue(content, 'Debug', 'GraphicsAPI', 'dx11'), 'utf8'),
-          destination: f,
-        }))
+        .then(content => {
+          let patched = setIniValue(content, 'Debug', 'GraphicsAPI', 'dx11');
+          patched = setIniValue(patched, 'Debug', 'GuiConsoleEnabled', '0');
+          return { type: 'generatefile', data: Buffer.from(patched, 'utf8'), destination: f };
+        })
         .catch(() => ({ type: 'copy', source: f, destination: f })); // read error → plain copy
     }
     return Promise.resolve({ type: 'copy', source: f, destination: f });
@@ -362,7 +452,12 @@ class UE4SSSettingsPage extends React.Component {
     this.state = {
       settingsPath: null,
       graphicsAPI: 'dx11',
-      guiConsole: true,
+      consoleEnabled: false,
+      guiConsoleEnabled: false,
+      guiConsoleVisible: false,
+      renderMode: 'ExternalThread',
+      modFolders: [],
+      newFolder: '',
       loaded: false,
       error: null,
       dirty: false,
@@ -381,10 +476,13 @@ class UE4SSSettingsPage extends React.Component {
       .then(settingsPath => {
         if (!settingsPath) { this.setState({ settingsPath: null, loaded: true }); return; }
         return fs.readFileAsync(settingsPath, 'utf8').then(content => {
-          const graphicsAPI = getIniValue(content, 'Debug', 'GraphicsAPI') || 'dx11';
-          const guiRaw      = getIniValue(content, 'Debug', 'GuiConsoleEnabled');
-          const guiConsole  = guiRaw !== null ? guiRaw.trim() !== '0' : true;
-          this.setState({ settingsPath, graphicsAPI, guiConsole, loaded: true });
+          const graphicsAPI       = getIniValue(content, 'Debug', 'GraphicsAPI')        || 'dx11';
+          const consoleEnabled    = (getIniValue(content, 'Debug', 'ConsoleEnabled')    || '').trim() === '1';
+          const guiConsoleEnabled = (getIniValue(content, 'Debug', 'GuiConsoleEnabled') || '').trim() === '1';
+          const guiConsoleVisible = (getIniValue(content, 'Debug', 'GuiConsoleVisible') || '').trim() === '1';
+          const renderMode        = getIniValue(content, 'Debug', 'RenderMode')         || 'ExternalThread';
+          const modFolders        = getIniListValues(content, 'Overrides', 'ModsFolderPaths');
+          this.setState({ settingsPath, graphicsAPI, consoleEnabled, guiConsoleEnabled, guiConsoleVisible, renderMode, modFolders, loaded: true });
         });
       })
       .catch(err => this.setState({ error: err.message, loaded: true }));
@@ -400,12 +498,16 @@ class UE4SSSettingsPage extends React.Component {
   }
 
   save() {
-    const { settingsPath, graphicsAPI, guiConsole } = this.state;
+    const { settingsPath, graphicsAPI, consoleEnabled, guiConsoleEnabled, guiConsoleVisible, renderMode, modFolders } = this.state;
     if (!settingsPath) return;
     fs.readFileAsync(settingsPath, 'utf8')
       .then(content => {
         let updated = setIniValue(content, 'Debug', 'GraphicsAPI', graphicsAPI);
-        updated     = setIniValue(updated,  'Debug', 'GuiConsoleEnabled', guiConsole ? '1' : '0');
+        updated     = setIniValue(updated,  'Debug', 'ConsoleEnabled',    consoleEnabled    ? '1' : '0');
+        updated     = setIniValue(updated,  'Debug', 'GuiConsoleEnabled', guiConsoleEnabled ? '1' : '0');
+        updated     = setIniValue(updated,  'Debug', 'GuiConsoleVisible', guiConsoleVisible ? '1' : '0');
+        updated     = setIniValue(updated,  'Debug', 'RenderMode',        renderMode);
+        updated     = setIniListValues(updated, 'Overrides', 'ModsFolderPaths', modFolders);
         return fs.writeFileAsync(settingsPath, updated, 'utf8');
       })
       .then(() => {
@@ -422,14 +524,34 @@ class UE4SSSettingsPage extends React.Component {
   render() {
     const rbs = reactBootstrap || {};
     const { Button, ControlLabel, FormControl, FormGroup, HelpBlock } = rbs;
-    const { settingsPath, graphicsAPI, guiConsole, loaded, error, dirty } = this.state;
+    const { settingsPath, graphicsAPI, consoleEnabled, guiConsoleEnabled, guiConsoleVisible, renderMode, modFolders, newFolder, loaded, error, dirty } = this.state;
     const ce = React.createElement;
 
+    // Refresh helper: resets transient state then re-runs load() so the page briefly
+    // shows "Loading…" then reflects the current disk state.  Useful when UE4SS was
+    // installed/deployed after this page first mounted (avoids a Vortex restart).
+    const refreshBtn = Button ? ce(Button, {
+      onClick: () => this.setState({ loaded: false, error: null }, () => this.load()),
+    }, 'Refresh') : null;
+
     if (!loaded)      return ce('div', null, 'Loading UE4SS settings…');
-    if (error)        return ce('div', null, 'Error: ' + error);
-    if (!settingsPath) return ce('div', null, 'UE4SS is not installed yet. Install a UE4SS mod first.');
+    if (error)        return ce('div', null, 'Error: ' + error, ' ', refreshBtn);
+    if (!settingsPath) return ce('div', null,
+      'UE4SS is not installed yet. Install a UE4SS mod first, then click Refresh.',
+      ' ', refreshBtn,
+    );
+
+    // QoL buttons — only when util.opn is available (vortex-api version dependent)
+    const hasOpn = Button && typeof util.opn === 'function';
+    const openFolderBtn = hasOpn ? ce(Button, {
+      onClick: () => util.opn(path.dirname(settingsPath)).catch(() => null),
+    }, 'Open folder') : null;
+    const editFileBtn = hasOpn ? ce(Button, {
+      onClick: () => util.opn(settingsPath).catch(() => null),
+    }, 'Edit file') : null;
 
     return ce('div', null,
+      // GraphicsAPI
       FormGroup ? ce(FormGroup, null,
         ControlLabel ? ce(ControlLabel, null, 'Graphics API') : null,
         FormControl ? ce(FormControl, {
@@ -437,26 +559,98 @@ class UE4SSSettingsPage extends React.Component {
           value: graphicsAPI,
           onChange: (e) => this.setState({ graphicsAPI: e.target.value, dirty: true }),
         },
-          ce('option', { value: 'dx11' }, 'DirectX 11 (recommended for EMERGENCY 2023)'),
+          ce('option', { value: 'dx11' },   'DirectX 11 (recommended for EMERGENCY 2023)'),
+          ce('option', { value: 'd3d11' },  'DirectX 11 (d3d11)'),
           ce('option', { value: 'opengl' }, 'OpenGL'),
         ) : null,
         HelpBlock ? ce(HelpBlock, null, 'EMERGENCY 2023 requires dx11; opengl causes a black screen.') : null,
       ) : null,
+      // ConsoleEnabled
       FormGroup ? ce(FormGroup, null,
-        ControlLabel ? ce(ControlLabel, null, 'GUI Console') : null,
+        ControlLabel ? ce(ControlLabel, null, 'Console') : null,
         FormControl ? ce(FormControl, {
           componentClass: 'select',
-          value: guiConsole ? '1' : '0',
-          onChange: (e) => this.setState({ guiConsole: e.target.value === '1', dirty: true }),
+          value: consoleEnabled ? '1' : '0',
+          onChange: (e) => this.setState({ consoleEnabled: e.target.value === '1', dirty: true }),
         },
           ce('option', { value: '1' }, 'Enabled'),
           ce('option', { value: '0' }, 'Disabled'),
         ) : null,
       ) : null,
+      // GuiConsoleEnabled
+      FormGroup ? ce(FormGroup, null,
+        ControlLabel ? ce(ControlLabel, null, 'GUI Console') : null,
+        FormControl ? ce(FormControl, {
+          componentClass: 'select',
+          value: guiConsoleEnabled ? '1' : '0',
+          onChange: (e) => this.setState({ guiConsoleEnabled: e.target.value === '1', dirty: true }),
+        },
+          ce('option', { value: '1' }, 'Enabled'),
+          ce('option', { value: '0' }, 'Disabled (recommended — hides the in-game debug console)'),
+        ) : null,
+      ) : null,
+      // GuiConsoleVisible
+      FormGroup ? ce(FormGroup, null,
+        ControlLabel ? ce(ControlLabel, null, 'GUI Console Visible') : null,
+        FormControl ? ce(FormControl, {
+          componentClass: 'select',
+          value: guiConsoleVisible ? '1' : '0',
+          onChange: (e) => this.setState({ guiConsoleVisible: e.target.value === '1', dirty: true }),
+        },
+          ce('option', { value: '1' }, 'Visible'),
+          ce('option', { value: '0' }, 'Hidden'),
+        ) : null,
+      ) : null,
+      // RenderMode
+      FormGroup ? ce(FormGroup, null,
+        ControlLabel ? ce(ControlLabel, null, 'Render Mode') : null,
+        FormControl ? ce(FormControl, {
+          componentClass: 'select',
+          value: renderMode,
+          onChange: (e) => this.setState({ renderMode: e.target.value, dirty: true }),
+        },
+          ce('option', { value: 'ExternalThread' },           'ExternalThread (default)'),
+          ce('option', { value: 'EngineTick' },               'EngineTick'),
+          ce('option', { value: 'GameViewportClientTick' },   'GameViewportClientTick'),
+        ) : null,
+      ) : null,
+      // External mod folders — [Overrides] +ModsFolderPaths
+      FormGroup ? ce(FormGroup, null,
+        ControlLabel ? ce(ControlLabel, null, 'External mod folders (UE4SS +ModsFolderPaths)') : null,
+        ...modFolders.map((folder, idx) => ce('div', { key: String(idx) },
+          ce('span', null, folder),
+          ' ',
+          Button ? ce(Button, {
+            bsSize: 'xsmall',
+            onClick: () => this.setState(s => ({
+              modFolders: s.modFolders.filter((_, i) => i !== idx),
+              dirty: true,
+            })),
+          }, 'Remove') : null,
+        )),
+        ce('div', null,
+          ce('input', {
+            type: 'text',
+            value: newFolder,
+            onChange: (e) => this.setState({ newFolder: e.target.value }),
+            placeholder: '../SharedMods',
+          }),
+          ' ',
+          Button ? ce(Button, {
+            onClick: () => {
+              const trimmed = newFolder.trim();
+              if (trimmed) this.setState(s => ({ modFolders: [...s.modFolders, trimmed], newFolder: '', dirty: true }));
+            },
+          }, 'Add') : null,
+        ),
+      ) : null,
       Button ? ce(Button, {
         onClick: () => this.save(),
         disabled: !dirty || !loaded,
       }, 'Save') : null,
+      refreshBtn,
+      openFolderBtn,
+      editFileBtn,
     );
   }
 }
@@ -541,6 +735,8 @@ module.exports = {
   isSafeRelPath,
   getIniValue,
   setIniValue,
+  getIniListValues,
+  setIniListValues,
   isUE4SSInstalled,
   findSettingsFile,
   UE4SSSettingsPage,
