@@ -1,6 +1,6 @@
 {
   "name": "EMERGENCY 2023",
   "author": "samas92i",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Game support extension for EMERGENCY 2023 — adds the game to Vortex and deploys UE4SS mods into Binaries/Win64/ue4ss/Mods. Requires UE4SS."
 }
