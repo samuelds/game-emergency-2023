@@ -22,10 +22,11 @@
  *   - Injector modType 'emergency2023-ue4ss-injector' deploys to EMERGENCY/Binaries/Win64.
  *   - Installer requires dwmapi.dll AND UE4SS-settings.ini (basename, flat or nested);
  *     rejects archives with path traversal or absolute paths.
- *   - At install time the UE4SS-settings.ini is patched to [Debug] GraphicsAPI=dx11
- *     (default is opengl which breaks EMERGENCY 2023 on Windows).
- *   - setup uses a robust fail-safe guard (isUE4SSInstalled) that checks multiple markers
- *     (flat + nested) so it NEVER clobbers an existing install.
+ *   - the archive INI is installed as UE4SS-settings.default.ini (template, patched to dx11);
+ *     the live UE4SS-settings.ini is an UNMANAGED user file created from the template after
+ *     deploy only if missing — user edits are never overwritten.
+ *   - setup checks isUE4SSInstalled FIRST (multi-marker: flat + nested) so it NEVER clobbers
+ *     an existing install, then ensures the Mods dir exists.
  *   - Download URL is host-allowlisted (github.com / objects.githubusercontent.com),
  *     https-only, and the asset name is re-validated before the URL is trusted.
  *   - An explicit consent dialog names the release version and destination folder before
@@ -52,7 +53,9 @@ const {
   isSafeRelPath, isTrustedUE4SSAsset,
   testUE4SSInjector, installUE4SSInjector,
   fetchLatestUE4SS, downloadUE4SS,
-  isUE4SSInstalled, findSettingsFile, findGame,
+  isUE4SSInstalled, findSettingsFile,
+  findTemplateFile, ensureUserSettingsFile,
+  findGame,
 } = require('./src/ue4ss');
 const UE4SSSettingsPage = require('./src/settings-page');
 
@@ -69,6 +72,7 @@ function main(context) {
     (game) => {
       const state = context.api.getState();
       const discovery = state.settings.gameMode.discovered[game.id];
+      if (!discovery || !discovery.path) return '.';
       return path.join(discovery.path, BINARIES_WIN64);
     },
     () => Promise.resolve(false),
@@ -78,11 +82,11 @@ function main(context) {
   // Installer: recognises UE4SS archives (dwmapi.dll + UE4SS-settings.ini, flat or nested).
   context.registerInstaller('emergency2023-ue4ss', 25, testUE4SSInjector, installUE4SSInjector);
 
-  // B2 — setup: ensure Mods dir, then use robust multi-marker guard before auto-installing.
+  // B2 — setup: check UE4SS first (multi-marker guard), then ensure Mods dir, then auto-install if needed.
   const prepareForModding = (discovery) =>
-    fs.ensureDirWritableAsync(path.join(discovery.path, MOD_PATH))
-      .then(() => isUE4SSInstalled(discovery.path))
-      .then((installed) => { if (!installed) return downloadUE4SS(context.api); });
+    isUE4SSInstalled(discovery.path)
+      .then((installed) => fs.ensureDirWritableAsync(path.join(discovery.path, MOD_PATH))
+        .then(() => { if (!installed) return downloadUE4SS(context.api); }));
 
   context.registerGame({
     id: GAME_ID,
@@ -99,6 +103,26 @@ function main(context) {
       steamAppId: parseInt(STEAM_APP_ID, 10),
       nexusPageId: 'emergency2023',
     },
+  });
+
+  // B3 — after every deployment, materialise the user settings file from the
+  // deployed template if (and only if) it does not exist yet.
+  context.once(() => {
+    context.api.onAsync('did-deploy', function(profileId) {
+      const state = context.api.getState();
+      const profile = state.persistent && state.persistent.profiles && state.persistent.profiles[profileId];
+      if (!profile || profile.gameId !== GAME_ID) return Promise.resolve();
+      const discovery = state.settings.gameMode.discovered[GAME_ID];
+      if (!discovery || !discovery.path) return Promise.resolve();
+      return ensureUserSettingsFile(discovery.path)
+        .catch(function(err) {
+          context.api.sendNotification({
+            id: 'ue4ss-settings-create-failed', type: 'warning',
+            title: 'Could not create UE4SS-settings.ini',
+            message: err.message,
+          });
+        });
+    });
   });
 
   // E4 — settings page: only register if react-bootstrap is available and game is discovered.
@@ -135,5 +159,7 @@ module.exports = {
   setIniListValues,
   isUE4SSInstalled,
   findSettingsFile,
+  findTemplateFile,
+  ensureUserSettingsFile,
   UE4SSSettingsPage,
 };

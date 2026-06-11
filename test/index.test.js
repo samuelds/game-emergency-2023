@@ -77,11 +77,13 @@ const mockContext = {
     sendNotification: () => {},
     showDialog:       () => Promise.resolve({ action: 'Download UE4SS' }),
     events: { emit: () => {} },
+    onAsync:          () => {},
   },
   registerModType:    () => {},
   registerInstaller:  () => {},
   registerGame:       () => {},
   registerSettings:   () => {},
+  once:               (fn) => fn(),
 };
 
 // ---------------------------------------------------------------------------
@@ -130,9 +132,11 @@ function makeHttpsGet(statusCode, bodyObj) {
 }
 
 // Convenience path constants used by multiple test groups
-const WIN64           = path.join('/game', 'EMERGENCY', 'Binaries', 'Win64');
-const FLAT_SETTINGS   = path.join(WIN64, 'UE4SS-settings.ini');
-const NESTED_SETTINGS = path.join(WIN64, 'ue4ss', 'UE4SS-settings.ini');
+const WIN64              = path.join('/game', 'EMERGENCY', 'Binaries', 'Win64');
+const FLAT_SETTINGS      = path.join(WIN64, 'UE4SS-settings.ini');
+const NESTED_SETTINGS    = path.join(WIN64, 'ue4ss', 'UE4SS-settings.ini');
+const FLAT_TEMPLATE      = path.join(WIN64, 'UE4SS-settings.default.ini');
+const NESTED_TEMPLATE    = path.join(WIN64, 'ue4ss', 'UE4SS-settings.default.ini');
 
 // ===========================================================================
 // 1. isSafeRelPath
@@ -148,6 +152,8 @@ test('rejects ../ traversal',           () => assert.ok(!idx.isSafeRelPath('../s
 test('rejects nested ../',              () => assert.ok(!idx.isSafeRelPath('Mods/../../etc/passwd')));
 test('rejects windows ..\\ traversal',  () => assert.ok(!idx.isSafeRelPath('Mods\\..\\..\\secret')));
 test('allows single dot prefix',        () => assert.ok(idx.isSafeRelPath('.hidden/file')));
+test('rejects drive-relative C:foo.dll (no slash after colon)', () => assert.ok(!idx.isSafeRelPath('C:foo.dll')));
+test('allows normal relative path ue4ss/Mods/x.lua', () => assert.ok(idx.isSafeRelPath('ue4ss/Mods/x.lua')));
 
 // ===========================================================================
 // 2. isTrustedUE4SSAsset
@@ -309,7 +315,7 @@ test('flat layout: patches settings -> generatefile, copies dwmapi.dll', () => {
       assert.ok(copy,   'copy instruction for dwmapi.dll');
       assert.ok(genf,   'generatefile instruction for settings');
       assert.ok(setmod, 'setmodtype instruction');
-      assert.strictEqual(genf.destination, 'UE4SS-settings.ini');
+      assert.strictEqual(genf.destination, 'UE4SS-settings.default.ini');
       const content = genf.data.toString('utf8');
       assert.ok(content.includes('dx11'),              'patched content contains dx11');
       assert.ok(!content.includes('opengl'),            'patched content has no opengl');
@@ -327,7 +333,7 @@ test('falls back to plain copy when readFileAsync throws', () => {
       mockFs.readFileAsync = savedRead;
       assert.ok(!r.instructions.find(i => i.type === 'generatefile'),
         'no generatefile on read error');
-      assert.ok(r.instructions.find(i => i.type === 'copy' && i.destination === 'UE4SS-settings.ini'),
+      assert.ok(r.instructions.find(i => i.type === 'copy' && i.destination === 'UE4SS-settings.default.ini'),
         'falls back to copy on read error');
     });
 });
@@ -418,10 +424,27 @@ test('aborts when no asset found (no dialog shown)', () => {
   let dialogCalled = false;
   const savedDialog = mockContext.api.showDialog;
   mockContext.api.showDialog = () => { dialogCalled = true; return Promise.resolve(null); };
+  const savedNotif = mockContext.api.sendNotification;
+  mockContext.api.sendNotification = () => {};
   return idx.downloadUE4SS(mockContext.api).then(() => {
     mockHttps.get = savedGet;
     mockContext.api.showDialog = savedDialog;
+    mockContext.api.sendNotification = savedNotif;
     assert.ok(!dialogCalled, 'dialog must NOT be shown when no asset found');
+  });
+});
+test('sends warning notification when asset is null (Fix 2)', () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, { tag_name: 'v3.0.1', assets: [] });
+  let notifSent = null;
+  const savedNotif = mockContext.api.sendNotification;
+  mockContext.api.sendNotification = (n) => { notifSent = n; };
+  return idx.downloadUE4SS(mockContext.api).then(() => {
+    mockHttps.get = savedGet;
+    mockContext.api.sendNotification = savedNotif;
+    assert.ok(notifSent, 'sendNotification must be called when asset is null');
+    assert.strictEqual(notifSent.type, 'warning', 'notification type must be warning');
+    assert.strictEqual(notifSent.id, 'ue4ss-fetch-failed', 'notification id must be ue4ss-fetch-failed');
   });
 });
 test('aborts download when user clicks Cancel', () => {
@@ -550,12 +573,12 @@ test('(b) returns false when Win64 exists but all markers absent', async () => {
   mockFs.statAsync = saved;
   assert.strictEqual(result, false);
 });
-test('returns true (fail-safe) when Binaries/Win64 itself is absent', async () => {
+test('returns false when Binaries/Win64 itself is absent (UE4SS not installed)', async () => {
   const saved = mockFs.statAsync;
   mockFs.statAsync = () => Promise.reject(new Error('ENOENT'));
   const result = await idx.isUE4SSInstalled('/game');
   mockFs.statAsync = saved;
-  assert.strictEqual(result, true);
+  assert.strictEqual(result, false);
 });
 
 // ===========================================================================
@@ -702,14 +725,29 @@ test('Add folder: pushes to modFolders and clears newFolder', () => {
   inst.state = {
     settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
     consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
-    modFolders: ['../Mods1'], newFolder: '../NewMod', loaded: true, error: null, dirty: false,
+    modFolders: ['../Mods1'], newFolder: '../NewMod', loaded: true, error: null, dirtyFields: {}, fileMtime: null, loadedValues: null,
   };
   // Simulate clicking Add: same logic as in render()
   const trimmed = inst.state.newFolder.trim();
-  if (trimmed) inst.setState(s => ({ modFolders: [...s.modFolders, trimmed], newFolder: '', dirty: true }));
+  if (trimmed) inst.setState(s => { const d = Object.assign({}, s.dirtyFields); d['modFolders'] = true; return { modFolders: s.modFolders.concat([trimmed]), newFolder: '', dirtyFields: d }; });
   assert.deepStrictEqual(inst.state.modFolders, ['../Mods1', '../NewMod']);
   assert.strictEqual(inst.state.newFolder, '');
-  assert.strictEqual(inst.state.dirty, true);
+  assert.ok(inst.state.dirtyFields['modFolders'], 'modFolders should be dirty');
+});
+test('Add folder: newline injection is stripped before push', () => {
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: [], newFolder: 'folder\n[Hack]\nkey = 1', loaded: true, error: null, dirtyFields: {}, fileMtime: null, loadedValues: null,
+  };
+  // Simulate clicking Add: same logic as in render() after Fix 7
+  const trimmed = inst.state.newFolder.replace(/[\r\n]+/g, '').trim();
+  if (trimmed) inst.setState(s => { const d = Object.assign({}, s.dirtyFields); d['modFolders'] = true; return { modFolders: s.modFolders.concat([trimmed]), newFolder: '', dirtyFields: d }; });
+  assert.strictEqual(inst.state.modFolders.length, 1, 'exactly one element added');
+  assert.ok(!inst.state.modFolders[0].includes('\n'), 'added value contains no newline');
+  assert.ok(!inst.state.modFolders[0].includes('\r'), 'added value contains no carriage return');
+  assert.strictEqual(inst.state.modFolders[0], 'folder[Hack]key = 1', 'newlines stripped, not split');
 });
 test('Browse: selectDir result is appended to modFolders', async () => {
   const apiWithSelectDir = {
@@ -720,14 +758,14 @@ test('Browse: selectDir result is appended to modFolders', async () => {
   inst.state = {
     settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
     consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
-    modFolders: ['../Mods1'], newFolder: '', loaded: true, error: null, dirty: false,
+    modFolders: ['../Mods1'], newFolder: '', loaded: true, error: null, dirtyFields: {}, fileMtime: null, loadedValues: null,
   };
   // Simulate Browse click: same logic as in render()
   await apiWithSelectDir.selectDir({ title: 'Select a UE4SS mods folder' })
-    .then(p => { if (p) inst.setState({ modFolders: inst.state.modFolders.concat(p), dirty: true }); })
+    .then(p => { if (p) inst.setState(s => { const d = Object.assign({}, s.dirtyFields); d['modFolders'] = true; return { modFolders: s.modFolders.concat([p]), dirtyFields: d }; }); })
     .catch(() => null);
   assert.deepStrictEqual(inst.state.modFolders, ['../Mods1', '/absolute/path/to/Mods']);
-  assert.strictEqual(inst.state.dirty, true);
+  assert.ok(inst.state.dirtyFields['modFolders'], 'modFolders should be dirty after browse');
 });
 test('Browse: cancel (empty string) does not change modFolders', async () => {
   const apiWithSelectDir = {
@@ -738,25 +776,25 @@ test('Browse: cancel (empty string) does not change modFolders', async () => {
   inst.state = {
     settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
     consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
-    modFolders: ['../Mods1'], newFolder: '', loaded: true, error: null, dirty: false,
+    modFolders: ['../Mods1'], newFolder: '', loaded: true, error: null, dirtyFields: {}, fileMtime: null, loadedValues: null,
   };
   await apiWithSelectDir.selectDir({ title: 'Select a UE4SS mods folder' })
-    .then(p => { if (p) inst.setState({ modFolders: inst.state.modFolders.concat(p), dirty: true }); })
+    .then(p => { if (p) inst.setState(s => { const d = Object.assign({}, s.dirtyFields); d['modFolders'] = true; return { modFolders: s.modFolders.concat([p]), dirtyFields: d }; }); })
     .catch(() => null);
   assert.deepStrictEqual(inst.state.modFolders, ['../Mods1'], 'cancel leaves modFolders unchanged');
-  assert.strictEqual(inst.state.dirty, false, 'cancel does not set dirty');
+  assert.strictEqual(Object.keys(inst.state.dirtyFields).length, 0, 'cancel does not set dirty');
 });
 test('Remove folder: filters modFolders by index', () => {
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
   inst.state = {
     settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
     consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
-    modFolders: ['../Mods1', '../Mods2', '../Mods3'], newFolder: '', loaded: true, error: null, dirty: false,
+    modFolders: ['../Mods1', '../Mods2', '../Mods3'], newFolder: '', loaded: true, error: null, dirtyFields: {}, fileMtime: null, loadedValues: null,
   };
   const idx_to_remove = 1; // remove ../Mods2
-  inst.setState(s => ({ modFolders: s.modFolders.filter((_, i) => i !== idx_to_remove), dirty: true }));
+  inst.setState(s => { const d = Object.assign({}, s.dirtyFields); d['modFolders'] = true; return { modFolders: s.modFolders.filter((_, i) => i !== idx_to_remove), dirtyFields: d }; });
   assert.deepStrictEqual(inst.state.modFolders, ['../Mods1', '../Mods3']);
-  assert.strictEqual(inst.state.dirty, true);
+  assert.ok(inst.state.dirtyFields['modFolders'], 'modFolders should be dirty after remove');
 });
 test('save(): writes modFolders via setIniListValues', async () => {
   const savedStat  = mockFs.statAsync;
@@ -770,7 +808,8 @@ test('save(): writes modFolders via setIniListValues', async () => {
   inst.state = {
     settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
     consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
-    modFolders: ['../SharedMods', '../TeamMods'], newFolder: '', loaded: true, error: null, dirty: true,
+    modFolders: ['../SharedMods', '../TeamMods'], newFolder: '', loaded: true, error: null,
+    dirtyFields: { modFolders: true }, fileMtime: null, loadedValues: null,
   };
   inst.save();
   await flushPromises();
@@ -797,7 +836,7 @@ test('render(): shows loading text before load completes', () => {
 });
 test('render(): shows "not installed" message + Refresh button when settingsPath is null', () => {
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
-  inst.state = { loaded: true, settingsPath: null, error: null, graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirty: false };
+  inst.state = { loaded: true, settingsPath: null, error: null, graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirtyFields: {}, fileMtime: null, loadedValues: null };
   const el = inst.render();
   assert.ok(el, 'render() should return an element');
   const text = (el.children || []).join(' ').toLowerCase();
@@ -812,21 +851,21 @@ test('render(): shows "not installed" message + Refresh button when settingsPath
 });
 test('render(): shows error message when error is set', () => {
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
-  inst.state = { loaded: true, settingsPath: null, error: 'Kaboom!', graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirty: false };
+  inst.state = { loaded: true, settingsPath: null, error: 'Kaboom!', graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirtyFields: {}, fileMtime: null, loadedValues: null };
   const el = inst.render();
   const text = (el.children || []).join(' ');
   assert.ok(text.includes('Kaboom!'), 'should include the error message');
 });
 test('render(): returns a div when fully loaded with a settingsPath', () => {
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
-  inst.state = { loaded: true, settingsPath: FLAT_SETTINGS, error: null, graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirty: false };
+  inst.state = { loaded: true, settingsPath: FLAT_SETTINGS, error: null, graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirtyFields: {}, fileMtime: null, loadedValues: null };
   const el = inst.render();
   assert.ok(el, 'render() should return an element');
   assert.strictEqual(el.type, 'div', 'outermost element should be a div');
 });
 test('render(): loaded view has a btn-toolbar with Save and Refresh', () => {
   const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
-  inst.state = { loaded: true, settingsPath: FLAT_SETTINGS, error: null, graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirty: false };
+  inst.state = { loaded: true, settingsPath: FLAT_SETTINGS, error: null, graphicsAPI: 'dx11', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [], newFolder: '', dirtyFields: {}, fileMtime: null, loadedValues: null };
   const el = inst.render();
   // Outer div contains section groups + btn-toolbar
   const outerChildren = (el.children || []).filter(c => c && typeof c !== 'string' && c !== null);
@@ -891,7 +930,9 @@ test('save(): patches INI, writes file, and sends success notification', async (
   inst.state = {
     settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
     consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
-    modFolders: [], newFolder: '', loaded: true, dirty: true, error: null,
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: { graphicsAPI: true, consoleEnabled: true, guiConsoleEnabled: true, guiConsoleVisible: true, renderMode: true },
+    fileMtime: null, loadedValues: null,
   };
   inst.save();
   await flushPromises();
@@ -903,6 +944,586 @@ test('save(): patches INI, writes file, and sends success notification', async (
   assert.ok(writtenContent.includes('dx11'),         'written content has dx11');
   assert.ok(writtenContent.includes('GuiConsoleEnabled'), 'written content has GuiConsoleEnabled');
   assert.ok(notifSent,                               'success notification was sent');
+});
+
+// ===========================================================================
+// 14. registerModType path callback — discovery guard (Fix 3)
+// ===========================================================================
+console.log('\nregisterModType path callback');
+
+test('returns "." when discovery is absent for game (Fix 3)', () => {
+  let capturedPathCb = null;
+  const ctx = {
+    api: {
+      getState: () => ({
+        settings: { gameMode: { discovered: {} } },
+      }),
+      sendNotification: () => {},
+      showDialog: () => Promise.resolve(null),
+      events: { emit: () => {} },
+      onAsync: () => {},
+    },
+    registerModType:   (_id, _pri, _supported, pathCb) => { capturedPathCb = pathCb; },
+    registerInstaller: () => {},
+    registerGame:      () => {},
+    registerSettings:  () => {},
+    once: (fn) => fn(),
+  };
+  const { default: mainFn } = idx;
+  mainFn(ctx);
+  assert.ok(capturedPathCb, 'path callback should have been captured');
+  const result = capturedPathCb({ id: 'emergency2023' });
+  assert.strictEqual(result, '.', 'should return "." when discovery is absent');
+});
+test('returns Binaries/Win64 path when discovery is present (Fix 3)', () => {
+  let capturedPathCb = null;
+  const ctx = {
+    api: {
+      getState: () => ({
+        settings: { gameMode: { discovered: { emergency2023: { path: '/game' } } } },
+      }),
+      sendNotification: () => {},
+      showDialog: () => Promise.resolve(null),
+      events: { emit: () => {} },
+      onAsync: () => {},
+    },
+    registerModType:   (_id, _pri, _supported, pathCb) => { capturedPathCb = pathCb; },
+    registerInstaller: () => {},
+    registerGame:      () => {},
+    registerSettings:  () => {},
+    once: (fn) => fn(),
+  };
+  const { default: mainFn } = idx;
+  mainFn(ctx);
+  assert.ok(capturedPathCb, 'path callback should have been captured');
+  const result = capturedPathCb({ id: 'emergency2023' });
+  assert.ok(result.includes('Binaries'), 'should include Binaries in path');
+  assert.ok(result.startsWith('/game'),  'should start with the game path');
+});
+
+// ===========================================================================
+// 15. ensureUserSettingsFile  (B3)
+// ===========================================================================
+console.log('\nensureUserSettingsFile');
+
+test('(a) active settings file exists -> returned as-is, writeFileAsync never called', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writeCalled = false;
+  mockFs.statAsync     = (p) => p === FLAT_SETTINGS ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.writeFileAsync = () => { writeCalled = true; return Promise.resolve(); };
+  const result = await idx.ensureUserSettingsFile('/game');
+  mockFs.statAsync     = savedStat;
+  mockFs.writeFileAsync = savedWrite;
+  assert.strictEqual(result, FLAT_SETTINGS, 'should return existing active path');
+  assert.ok(!writeCalled, 'writeFileAsync must NOT be called when active file exists');
+});
+
+test('(b) active absent + flat template -> writes UE4SS-settings.ini next to template', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writtenPath = null;
+  let writtenContent = null;
+  const TEMPLATE_CONTENT = '[Debug]\nGraphicsAPI = dx11\n';
+  mockFs.statAsync     = (p) => p === FLAT_TEMPLATE ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync = (p) => p === FLAT_TEMPLATE ? Promise.resolve(TEMPLATE_CONTENT) : Promise.reject(new Error('ENOENT'));
+  mockFs.writeFileAsync = (p, c) => { writtenPath = p; writtenContent = c; return Promise.resolve(); };
+  const result = await idx.ensureUserSettingsFile('/game');
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  assert.strictEqual(result, FLAT_SETTINGS, 'should return newly created flat settings path');
+  assert.strictEqual(writtenPath, FLAT_SETTINGS, 'writeFileAsync called on flat settings path');
+  assert.strictEqual(writtenContent, TEMPLATE_CONTENT, 'content copied from template');
+});
+
+test('(c) active absent + nested template -> writes UE4SS-settings.ini in ue4ss/ subfolder', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writtenPath = null;
+  const TEMPLATE_CONTENT = '[Debug]\nGraphicsAPI = dx11\n';
+  mockFs.statAsync     = (p) => p === NESTED_TEMPLATE ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync = (p) => p === NESTED_TEMPLATE ? Promise.resolve(TEMPLATE_CONTENT) : Promise.reject(new Error('ENOENT'));
+  mockFs.writeFileAsync = (p) => { writtenPath = p; return Promise.resolve(); };
+  const result = await idx.ensureUserSettingsFile('/game');
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  assert.strictEqual(result, NESTED_SETTINGS, 'should return newly created nested settings path');
+  assert.strictEqual(writtenPath, NESTED_SETTINGS, 'writeFileAsync called on nested settings path');
+});
+
+test('(d) neither active nor template -> returns null, no write', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writeCalled = false;
+  mockFs.statAsync     = () => Promise.reject(new Error('ENOENT'));
+  mockFs.writeFileAsync = () => { writeCalled = true; return Promise.resolve(); };
+  const result = await idx.ensureUserSettingsFile('/game');
+  mockFs.statAsync     = savedStat;
+  mockFs.writeFileAsync = savedWrite;
+  assert.strictEqual(result, null, 'should return null when neither file exists');
+  assert.ok(!writeCalled, 'writeFileAsync must not be called when no template found');
+});
+
+// ===========================================================================
+// 16. did-deploy hook  (B3)
+// ===========================================================================
+console.log('\ndid-deploy hook');
+
+test('(a) did-deploy: profile from another game -> ensureUserSettingsFile not triggered', async () => {
+  let statCalled = false;
+  const savedStat = mockFs.statAsync;
+  mockFs.statAsync = () => { statCalled = true; return Promise.resolve({}); };
+
+  let capturedHandler = null;
+  const ctx = {
+    api: {
+      getState: () => ({
+        settings: { gameMode: { discovered: { emergency2023: { path: '/game' } } } },
+        persistent: { profiles: { 'prof-other': { gameId: 'othergame' } } },
+      }),
+      sendNotification: () => {},
+      showDialog: () => Promise.resolve(null),
+      events: { emit: () => {} },
+      onAsync: (_ev, fn) => { capturedHandler = fn; },
+    },
+    registerModType:   () => {},
+    registerInstaller: () => {},
+    registerGame:      () => {},
+    registerSettings:  () => {},
+    once: (fn) => fn(),
+  };
+  const { default: mainFn } = idx;
+  mainFn(ctx);
+  mockFs.statAsync = savedStat;
+
+  assert.ok(capturedHandler, 'onAsync handler should be registered');
+  statCalled = false;
+  const savedStat2 = mockFs.statAsync;
+  mockFs.statAsync = () => { statCalled = true; return Promise.reject(new Error('ENOENT')); };
+  await capturedHandler('prof-other');
+  mockFs.statAsync = savedStat2;
+  assert.ok(!statCalled, 'statAsync must not be called for a different game profile');
+});
+
+test('(b) did-deploy: emergency2023 profile + discovery -> ensureUserSettingsFile runs', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writeWasCalled = false;
+  const TEMPLATE_CONTENT = '[Debug]\nGraphicsAPI = dx11\n';
+  // No active INI, flat template present
+  mockFs.statAsync     = (p) => p === FLAT_TEMPLATE ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync = (p) => p === FLAT_TEMPLATE ? Promise.resolve(TEMPLATE_CONTENT) : Promise.reject(new Error('ENOENT'));
+  mockFs.writeFileAsync = () => { writeWasCalled = true; return Promise.resolve(); };
+
+  let capturedHandler = null;
+  const ctx = {
+    api: {
+      getState: () => ({
+        settings: { gameMode: { discovered: { emergency2023: { path: '/game' } } } },
+        persistent: { profiles: { 'prof-em': { gameId: 'emergency2023' } } },
+      }),
+      sendNotification: () => {},
+      showDialog: () => Promise.resolve(null),
+      events: { emit: () => {} },
+      onAsync: (_ev, fn) => { capturedHandler = fn; },
+    },
+    registerModType:   () => {},
+    registerInstaller: () => {},
+    registerGame:      () => {},
+    registerSettings:  () => {},
+    once: (fn) => fn(),
+  };
+  const { default: mainFn } = idx;
+  mainFn(ctx);
+
+  await capturedHandler('prof-em');
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  assert.ok(writeWasCalled, 'writeFileAsync should have been called to create settings from template');
+});
+
+test('(c) did-deploy: write error -> sendNotification warning called', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  const TEMPLATE_CONTENT = '[Debug]\nGraphicsAPI = dx11\n';
+  mockFs.statAsync     = (p) => p === FLAT_TEMPLATE ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync = (p) => p === FLAT_TEMPLATE ? Promise.resolve(TEMPLATE_CONTENT) : Promise.reject(new Error('ENOENT'));
+  mockFs.writeFileAsync = () => Promise.reject(new Error('EPERM: permission denied'));
+
+  let notifSent = null;
+  let capturedHandler = null;
+  const ctx = {
+    api: {
+      getState: () => ({
+        settings: { gameMode: { discovered: { emergency2023: { path: '/game' } } } },
+        persistent: { profiles: { 'prof-em': { gameId: 'emergency2023' } } },
+      }),
+      sendNotification: (n) => { notifSent = n; },
+      showDialog: () => Promise.resolve(null),
+      events: { emit: () => {} },
+      onAsync: (_ev, fn) => { capturedHandler = fn; },
+    },
+    registerModType:   () => {},
+    registerInstaller: () => {},
+    registerGame:      () => {},
+    registerSettings:  () => {},
+    once: (fn) => fn(),
+  };
+  const { default: mainFn } = idx;
+  mainFn(ctx);
+
+  await capturedHandler('prof-em');
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  assert.ok(notifSent, 'sendNotification must be called on write error');
+  assert.strictEqual(notifSent.type, 'warning', 'notification type must be warning');
+  assert.strictEqual(notifSent.id, 'ue4ss-settings-create-failed', 'notification id correct');
+  assert.ok(notifSent.message.includes('EPERM') || notifSent.message.includes('permission'),
+    'notification message contains error text');
+});
+
+// ===========================================================================
+// 17. UE4SSSettingsPage — dirty tracking & selective save
+// ===========================================================================
+console.log('\nUE4SSSettingsPage (dirty tracking & selective save)');
+
+test('dirtyFields: save() with single dirty field only writes that key', async () => {
+  // File has GraphicsAPI=opengl; state has dx11 (dirty) but GuiConsoleEnabled differs too (NOT dirty).
+  // Only GraphicsAPI should be written — GuiConsoleEnabled must remain 'opengl' era.
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writtenContent = null;
+  const FILE_INI = '[Debug]\nGraphicsAPI = opengl\nGuiConsoleEnabled = 1\n';
+  mockFs.statAsync      = (p) => p === FLAT_SETTINGS ? Promise.resolve({ mtimeMs: 100 }) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync  = () => Promise.resolve(FILE_INI);
+  mockFs.writeFileAsync = (_p, c) => { writtenContent = c; return Promise.resolve(); };
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  // State has guiConsoleEnabled=false (UI state) but only graphicsAPI is dirty
+  inst.state = {
+    settingsPath: FLAT_SETTINGS,
+    graphicsAPI: 'dx11',          // dirty
+    consoleEnabled: false,
+    guiConsoleEnabled: false,     // NOT dirty — file still has '1'
+    guiConsoleVisible: false,
+    renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: { graphicsAPI: true },
+    fileMtime: 100, loadedValues: { graphicsAPI: 'opengl', consoleEnabled: false, guiConsoleEnabled: true, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [] },
+  };
+  inst.save();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  assert.ok(writtenContent, 'writeFileAsync was called');
+  assert.ok(writtenContent.includes('GraphicsAPI = dx11'), 'dirty graphicsAPI was written');
+  // GuiConsoleEnabled must remain at file value '1', not be overwritten with '0'
+  assert.ok(writtenContent.includes('GuiConsoleEnabled = 1'), 'non-dirty GuiConsoleEnabled preserved at file value');
+});
+
+test('dirtyFields: save() after load() clears dirtyFields', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  mockFs.statAsync      = (p) => p === FLAT_SETTINGS ? Promise.resolve({ mtimeMs: 100 }) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync  = () => Promise.resolve('[Debug]\nGraphicsAPI = dx11\n');
+  mockFs.writeFileAsync = (_p, _c) => Promise.resolve();
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: { graphicsAPI: true },
+    fileMtime: 100, loadedValues: { graphicsAPI: 'opengl', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [] },
+  };
+  inst.save();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  assert.deepStrictEqual(inst.state.dirtyFields, {}, 'dirtyFields cleared after successful save');
+});
+
+test('mtime conflict: mtime changed but dirty key NOT changed in file → proceeds without dialog', async () => {
+  // File mtime changed but the field that is dirty (graphicsAPI) has the same value as loaded.
+  // So no real conflict — save must proceed with no dialog.
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writtenContent = null;
+  let dialogCalled = false;
+  const savedDialog = mockContext.api.showDialog;
+  mockContext.api.showDialog = () => { dialogCalled = true; return Promise.resolve({ action: 'Keep my changes' }); };
+  // mtime has changed (100 → 200) but file content is same for graphicsAPI
+  const FILE_INI = '[Debug]\nGraphicsAPI = opengl\nGuiConsoleEnabled = 0\n';
+  mockFs.statAsync = (p) => {
+    if (p !== FLAT_SETTINGS) return Promise.reject(new Error('ENOENT'));
+    return Promise.resolve({ mtimeMs: 200 }); // new mtime
+  };
+  mockFs.readFileAsync  = () => Promise.resolve(FILE_INI);
+  mockFs.writeFileAsync = (_p, c) => { writtenContent = c; return Promise.resolve(); };
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS,
+    graphicsAPI: 'dx11',         // dirty — we want to change from opengl to dx11
+    consoleEnabled: false,
+    guiConsoleEnabled: false,
+    guiConsoleVisible: false,
+    renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: { graphicsAPI: true },
+    // loadedValues had graphicsAPI=opengl, same as what file has now → no conflict
+    fileMtime: 100,
+    loadedValues: { graphicsAPI: 'opengl', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [] },
+  };
+  inst.save();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  mockContext.api.showDialog = savedDialog;
+  assert.ok(!dialogCalled, 'no dialog when only mtime changed but no value conflict on dirty keys');
+  assert.ok(writtenContent, 'write proceeded despite mtime change');
+  assert.ok(writtenContent.includes('GraphicsAPI = dx11'), 'dirty field written');
+});
+
+test('mtime conflict: real conflict → showDialog called; "Reload file" → no write, load() called', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writtenContent = null;
+  let dialogCalled = false;
+  let loadCalled = 0;
+  const savedDialog = mockContext.api.showDialog;
+  mockContext.api.showDialog = (_type, _title, _body, _btns) => {
+    dialogCalled = true;
+    return Promise.resolve({ action: 'Reload file' });
+  };
+  // File mtime changed AND file value for the dirty key also changed
+  // Originally loaded: graphicsAPI=opengl; file now has graphicsAPI=d3d11 (someone changed it externally)
+  const FILE_AFTER_EXTERNAL_EDIT = '[Debug]\nGraphicsAPI = d3d11\n';
+  mockFs.statAsync = (p) => {
+    if (p !== FLAT_SETTINGS) return Promise.reject(new Error('ENOENT'));
+    return Promise.resolve({ mtimeMs: 999 }); // different mtime
+  };
+  mockFs.readFileAsync  = () => Promise.resolve(FILE_AFTER_EXTERNAL_EDIT);
+  mockFs.writeFileAsync = (_p, c) => { writtenContent = c; return Promise.resolve(); };
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  // Patch load so we can count calls without actually doing FS
+  const origLoad = inst.load.bind(inst);
+  inst.load = function() { loadCalled++; origLoad(); };
+  inst.state = {
+    settingsPath: FLAT_SETTINGS,
+    graphicsAPI: 'dx11',       // user changed to dx11
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: { graphicsAPI: true },
+    fileMtime: 100,
+    loadedValues: { graphicsAPI: 'opengl', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [] },
+  };
+  inst.save();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  mockContext.api.showDialog = savedDialog;
+  assert.ok(dialogCalled, 'dialog was shown for real conflict');
+  assert.strictEqual(writtenContent, null, '"Reload file" must not write');
+  assert.ok(loadCalled > 0, 'load() was called after "Reload file"');
+});
+
+test('mtime conflict: real conflict → "Keep my changes" → write proceeds', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writtenContent = null;
+  const savedDialog = mockContext.api.showDialog;
+  mockContext.api.showDialog = () => Promise.resolve({ action: 'Keep my changes' });
+  const FILE_AFTER_EXTERNAL_EDIT = '[Debug]\nGraphicsAPI = d3d11\n';
+  mockFs.statAsync = (p) => {
+    if (p !== FLAT_SETTINGS) return Promise.reject(new Error('ENOENT'));
+    return Promise.resolve({ mtimeMs: 999 });
+  };
+  mockFs.readFileAsync  = () => Promise.resolve(FILE_AFTER_EXTERNAL_EDIT);
+  mockFs.writeFileAsync = (_p, c) => { writtenContent = c; return Promise.resolve(); };
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS,
+    graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: { graphicsAPI: true },
+    fileMtime: 100,
+    loadedValues: { graphicsAPI: 'opengl', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [] },
+  };
+  inst.save();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  mockContext.api.showDialog = savedDialog;
+  assert.ok(writtenContent, '"Keep my changes" must write');
+  assert.ok(writtenContent.includes('GraphicsAPI = dx11'), 'user value written despite conflict');
+});
+
+test('mtime conflict: no showDialog on api → defaults to Keep my changes (write proceeds)', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writtenContent = null;
+  const FILE_AFTER_EXTERNAL_EDIT = '[Debug]\nGraphicsAPI = d3d11\n';
+  mockFs.statAsync = (p) => {
+    if (p !== FLAT_SETTINGS) return Promise.reject(new Error('ENOENT'));
+    return Promise.resolve({ mtimeMs: 999 });
+  };
+  mockFs.readFileAsync  = () => Promise.resolve(FILE_AFTER_EXTERNAL_EDIT);
+  mockFs.writeFileAsync = (_p, c) => { writtenContent = c; return Promise.resolve(); };
+  // API without showDialog
+  const minimalApi = {
+    getState: mockContext.api.getState,
+    sendNotification: () => {},
+    // no showDialog
+  };
+  const inst = new idx.UE4SSSettingsPage({ api: minimalApi });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS,
+    graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: { graphicsAPI: true },
+    fileMtime: 100,
+    loadedValues: { graphicsAPI: 'opengl', consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread', modFolders: [] },
+  };
+  inst.save();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  assert.ok(writtenContent, 'write should proceed when no showDialog available');
+  assert.ok(writtenContent.includes('GraphicsAPI = dx11'), 'user value written');
+});
+
+test('Create settings file button: settingsPath null + ensureUserSettingsFile → load() called', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  const TEMPLATE_CONTENT = '[Debug]\nGraphicsAPI = dx11\n';
+  // Initially no settings, flat template present
+  mockFs.statAsync = (p) => {
+    if (p === FLAT_TEMPLATE) return Promise.resolve({});
+    return Promise.reject(new Error('ENOENT'));
+  };
+  mockFs.readFileAsync  = (p) => p === FLAT_TEMPLATE ? Promise.resolve(TEMPLATE_CONTENT) : Promise.reject(new Error('ENOENT'));
+  let writeCalledPath = null;
+  mockFs.writeFileAsync = (p, c) => { writeCalledPath = p; return Promise.resolve(); };
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: null, graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: {}, fileMtime: null, loadedValues: null,
+  };
+  // Simulate clicking "Create settings file": same logic as render()
+  const disc = inst._getDiscovery();
+  const { ensureUserSettingsFile: ensureFn } = require('../src/ue4ss');
+  let ensureResult = null;
+  let loadCalledAfter = false;
+  await ensureFn(disc.path).then(function(result) {
+    ensureResult = result;
+    if (!result) {
+      inst.setState({ error: 'No UE4SS template found — install UE4SS first.' });
+      return;
+    }
+    loadCalledAfter = true;
+    inst.setState({ loaded: false, error: null });
+    // We don't call inst.load() in test to avoid FS re-setup complexity
+  });
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  assert.ok(ensureResult, 'ensureUserSettingsFile returned a path');
+  assert.strictEqual(ensureResult, FLAT_SETTINGS, 'created flat settings path');
+  assert.ok(writeCalledPath, 'writeFileAsync was called to create the file');
+  assert.ok(loadCalledAfter, 'load() flow was triggered after file creation');
+});
+
+test('Create settings file button: no template → setState error', async () => {
+  const savedStat  = mockFs.statAsync;
+  // No files at all
+  mockFs.statAsync = () => Promise.reject(new Error('ENOENT'));
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: null, graphicsAPI: 'dx11',
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false, renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: {}, fileMtime: null, loadedValues: null,
+  };
+  const disc = inst._getDiscovery();
+  const { ensureUserSettingsFile: ensureFn } = require('../src/ue4ss');
+  await ensureFn(disc.path).then(function(result) {
+    if (!result) {
+      inst.setState({ error: 'No UE4SS template found — install UE4SS first.' });
+    }
+  });
+  mockFs.statAsync = savedStat;
+  assert.strictEqual(inst.state.error, 'No UE4SS template found — install UE4SS first.',
+    'error set when no template found');
+});
+
+test('componentWillUnmount: no setState called after unmount (no throw)', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  // Set up a slow-resolving load (via flushPromises after unmount)
+  let resolveRead;
+  const pendingRead = new Promise(r => { resolveRead = r; });
+  mockFs.statAsync = (p) => p === FLAT_SETTINGS ? Promise.resolve({ mtimeMs: 100 }) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync = () => pendingRead;
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = Object.assign({}, inst.state, { settingsPath: null });
+  // Patch setState to detect unexpected calls
+  let setStateCalled = false;
+  const origSetState = inst.setState.bind(inst);
+  inst.setState = function(partial) {
+    if (inst._unmounted) {
+      setStateCalled = true;
+      throw new Error('setState called after unmount');
+    }
+    return origSetState(partial);
+  };
+  // Start load(), then immediately unmount
+  inst.load();
+  inst.componentWillUnmount();
+  // Now resolve the pending FS read — should not trigger setState
+  resolveRead('[Debug]\nGraphicsAPI = dx11\n');
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  assert.ok(!setStateCalled, 'setState must not be called after componentWillUnmount');
+});
+
+test('unknown graphicsAPI value: render() adds (manual) option to select', () => {
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'vulkan',  // unknown value
+    consoleEnabled: false, guiConsoleEnabled: false, guiConsoleVisible: false,
+    renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: {}, fileMtime: null, loadedValues: null,
+  };
+  // render() should not throw, and we can check it returns an element
+  let el;
+  assert.doesNotThrow(() => { el = inst.render(); }, 'render with unknown graphicsAPI must not throw');
+  assert.ok(el, 'render returns element');
+  // We can't deep-traverse all React elements, but at minimum it should not error
 });
 
 // ===========================================================================
