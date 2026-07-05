@@ -55,7 +55,7 @@ const {
   fetchLatestUE4SS, downloadUE4SS,
   isUE4SSInstalled, findSettingsFile,
   findTemplateFile, ensureUserSettingsFile,
-  findGame,
+  findModsPath, findGame, getDiscovery,
 } = require('./src/ue4ss');
 const UE4SSSettingsPage = require('./src/settings-page');
 
@@ -70,9 +70,10 @@ function main(context) {
     25,
     (gameId) => gameId === GAME_ID,
     (game) => {
-      const state = context.api.getState();
-      const discovery = state.settings.gameMode.discovered[game.id];
-      if (!discovery || !discovery.path) return '.';
+      const discovery = getDiscovery(context.api, game.id);
+      if (!discovery || !discovery.path) {
+        throw new Error('EMERGENCY 2023 discovery path unavailable; cannot place UE4SS Injector mod');
+      }
       return path.join(discovery.path, BINARIES_WIN64);
     },
     () => Promise.resolve(false),
@@ -82,10 +83,15 @@ function main(context) {
   // Installer: recognises UE4SS archives (dwmapi.dll + UE4SS-settings.ini, flat or nested).
   context.registerInstaller('emergency2023-ue4ss', 25, testUE4SSInjector, installUE4SSInjector);
 
-  // B2 — setup: check UE4SS first (multi-marker guard), then ensure Mods dir, then auto-install if needed.
+  // B2 — setup: check UE4SS first (multi-marker guard), detect the actual
+  // installed layout (Fix 3 — flat vs nested Mods folder), ensure that Mods
+  // dir exists, then auto-install if needed.
+  let cachedModPath = MOD_PATH;
   const prepareForModding = (discovery) =>
     isUE4SSInstalled(discovery.path)
-      .then((installed) => fs.ensureDirWritableAsync(path.join(discovery.path, MOD_PATH))
+      .then((installed) => findModsPath(discovery.path)
+        .then((modPath) => { cachedModPath = modPath; })
+        .then(() => fs.ensureDirWritableAsync(path.join(discovery.path, cachedModPath)))
         .then(() => { if (!installed) return downloadUE4SS(context.api); }));
 
   context.registerGame({
@@ -94,7 +100,7 @@ function main(context) {
     mergeMods: true,
     logo: 'gameart.png',
     queryPath: findGame,
-    queryModPath: () => MOD_PATH,
+    queryModPath: () => cachedModPath,
     executable: () => EXECUTABLE,
     requiredFiles: [EXECUTABLE],
     setup: prepareForModding,
@@ -112,7 +118,7 @@ function main(context) {
       const state = context.api.getState();
       const profile = state.persistent && state.persistent.profiles && state.persistent.profiles[profileId];
       if (!profile || profile.gameId !== GAME_ID) return Promise.resolve();
-      const discovery = state.settings.gameMode.discovered[GAME_ID];
+      const discovery = getDiscovery(context.api, GAME_ID);
       if (!discovery || !discovery.path) return Promise.resolve();
       return ensureUserSettingsFile(discovery.path)
         .catch(function(err) {
@@ -132,9 +138,7 @@ function main(context) {
       UE4SSSettingsPage,
       () => ({ api: context.api }),
       () => {
-        const st   = context.api.getState();
-        const disc = st && st.settings && st.settings.gameMode &&
-                     st.settings.gameMode.discovered && st.settings.gameMode.discovered[GAME_ID];
+        const disc = getDiscovery(context.api, GAME_ID);
         return !!(disc && disc.path);
       },
       100,

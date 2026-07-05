@@ -3,7 +3,7 @@ const path  = require('path');
 const https = require('https');
 const { fs, util, log } = require('vortex-api');
 const {
-  GAME_ID, STEAM_APP_ID, BINARIES_WIN64, MOD_PATH,
+  GAME_ID, STEAM_APP_ID, BINARIES_WIN64, MOD_PATH, MOD_PATH_FLAT,
   UE4SS_INJECTOR_MODTYPE, UE4SS_SETTINGS_FILE, UE4SS_SETTINGS_TEMPLATE,
   UE4SS_GITHUB, UE4SS_ASSET_PATTERN,
 } = require('./constants');
@@ -49,7 +49,9 @@ function testUE4SSInjector(files, gameId) {
 }
 
 function installUE4SSInjector(files, destinationPath) {
-  const filtered = files.filter(f => !f.endsWith(path.sep) && isSafeRelPath(f));
+  // Archive directory entries always use '/' (the ZIP spec's convention),
+  // regardless of the host OS — checking path.sep alone misses them on Windows.
+  const filtered = files.filter(f => !/[\\/]$/.test(f) && isSafeRelPath(f));
   return Promise.all(filtered.map(f => {
     const base = path.basename(f).toLowerCase();
     if (base === 'ue4ss-settings.ini') {
@@ -61,7 +63,10 @@ function installUE4SSInjector(files, destinationPath) {
           patched = setIniValue(patched, 'Debug', 'GuiConsoleEnabled', '0');
           return { type: 'generatefile', data: Buffer.from(patched, 'utf8'), destination: templateDest };
         })
-        .catch(() => ({ type: 'copy', source: f, destination: templateDest }));
+        .catch((e) => {
+          log('warn', 'UE4SS settings template patch failed; installing unpatched archive INI', { error: e.message });
+          return { type: 'copy', source: f, destination: templateDest };
+        });
     }
     return Promise.resolve({ type: 'copy', source: f, destination: f });
   })).then(instructions => {
@@ -128,6 +133,11 @@ async function downloadUE4SS(api) {
     return;
   }
 
+  if (!api || typeof api.showDialog !== 'function') {
+    log('warn', 'UE4SS auto-install skipped: no showDialog API available to obtain consent');
+    return;
+  }
+
   const dlgResult = await api.showDialog(
     'question',
     'Install UE4SS?',
@@ -176,24 +186,24 @@ async function isUE4SSInstalled(root) {
 // E2 — Find settings file (flat first, then nested)
 // ---------------------------------------------------------------------------
 
-async function findSettingsFile(root) {
-  const flat = path.join(root, BINARIES_WIN64, UE4SS_SETTINGS_FILE);
+async function findFlatOrNestedFile(root, filename) {
+  const flat = path.join(root, BINARIES_WIN64, filename);
   try { await fs.statAsync(flat); return flat; } catch (_) {}
-  const nested = path.join(root, BINARIES_WIN64, 'ue4ss', UE4SS_SETTINGS_FILE);
+  const nested = path.join(root, BINARIES_WIN64, 'ue4ss', filename);
   try { await fs.statAsync(nested); return nested; } catch (_) {}
   return null;
+}
+
+function findSettingsFile(root) {
+  return findFlatOrNestedFile(root, UE4SS_SETTINGS_FILE);
 }
 
 // ---------------------------------------------------------------------------
 // B3 — Find template file (flat first, then nested)
 // ---------------------------------------------------------------------------
 
-async function findTemplateFile(root) {
-  const flat = path.join(root, BINARIES_WIN64, UE4SS_SETTINGS_TEMPLATE);
-  try { await fs.statAsync(flat); return flat; } catch (_) {}
-  const nested = path.join(root, BINARIES_WIN64, 'ue4ss', UE4SS_SETTINGS_TEMPLATE);
-  try { await fs.statAsync(nested); return nested; } catch (_) {}
-  return null;
+function findTemplateFile(root) {
+  return findFlatOrNestedFile(root, UE4SS_SETTINGS_TEMPLATE);
 }
 
 // ---------------------------------------------------------------------------
@@ -212,12 +222,41 @@ async function ensureUserSettingsFile(root) {
 }
 
 // ---------------------------------------------------------------------------
+// B4 — Mods path: flat layout if a flat UE4SS.dll is present, nested otherwise
+// (nested is also the correct default before UE4SS is installed, since that's
+// what the auto-installed experimental build uses).
+// ---------------------------------------------------------------------------
+
+async function findModsPath(root) {
+  const flatDll = path.join(root, BINARIES_WIN64, 'UE4SS.dll');
+  try { await fs.statAsync(flatDll); return MOD_PATH_FLAT; } catch (_) {}
+  return MOD_PATH;
+}
+
+// ---------------------------------------------------------------------------
+// Shared discovery lookup — a single guarded definition used everywhere the
+// extension needs the discovered game path, so no call site can forget to
+// guard state.settings.gameMode (unlike a hand-rolled lookup at each site).
+// ---------------------------------------------------------------------------
+
+function getDiscovery(api, gameId) {
+  const state = api && api.getState && api.getState();
+  return (state && state.settings && state.settings.gameMode &&
+          state.settings.gameMode.discovered && state.settings.gameMode.discovered[gameId]) || null;
+}
+
+// ---------------------------------------------------------------------------
 // Game path finder
 // ---------------------------------------------------------------------------
 
 function findGame() {
   return util.GameStoreHelper.findByAppId([STEAM_APP_ID])
-    .then((game) => game.gamePath);
+    .then((game) => {
+      if (!game || !game.gamePath) {
+        return Promise.reject(new Error('EMERGENCY 2023 installation not found'));
+      }
+      return game.gamePath;
+    });
 }
 
 module.exports = {
@@ -226,5 +265,5 @@ module.exports = {
   fetchLatestUE4SS, downloadUE4SS,
   isUE4SSInstalled, findSettingsFile,
   findTemplateFile, ensureUserSettingsFile,
-  findGame,
+  findModsPath, findGame, getDiscovery,
 };

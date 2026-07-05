@@ -7,7 +7,7 @@ try { reactBootstrap = require('react-bootstrap'); } catch (_) {}
 
 const { GAME_ID }           = require('./constants');
 const { getIniValue, setIniValue, getIniListValues, setIniListValues } = require('./ini');
-const { findSettingsFile, ensureUserSettingsFile }  = require('./ue4ss');
+const { findSettingsFile, ensureUserSettingsFile, getDiscovery }  = require('./ue4ss');
 
 // ---------------------------------------------------------------------------
 // UE4SS settings page — native Vortex look (Toggle / Panel / EmptyPlaceholder)
@@ -143,12 +143,7 @@ class UE4SSSettingsPage extends React.Component {
   }
 
   _getDiscovery() {
-    const st = this.props.api && this.props.api.getState && this.props.api.getState();
-    return st &&
-           st.settings &&
-           st.settings.gameMode &&
-           st.settings.gameMode.discovered &&
-           st.settings.gameMode.discovered[GAME_ID];
+    return getDiscovery(this.props.api, GAME_ID);
   }
 
   // Serialise a state value to the INI string value for comparison purposes.
@@ -203,14 +198,8 @@ class UE4SSSettingsPage extends React.Component {
             const f = dirty[j];
             if (f === 'modFolders') {
               updated = setIniListValues(updated, 'Overrides', 'ModsFolderPaths', state.modFolders);
-            } else if (f === 'consoleEnabled') {
-              updated = setIniValue(updated, 'Debug', 'ConsoleEnabled', state.consoleEnabled ? '1' : '0');
-            } else if (f === 'guiConsoleEnabled') {
-              updated = setIniValue(updated, 'Debug', 'GuiConsoleEnabled', state.guiConsoleEnabled ? '1' : '0');
-            } else if (f === 'guiConsoleVisible') {
-              updated = setIniValue(updated, 'Debug', 'GuiConsoleVisible', state.guiConsoleVisible ? '1' : '0');
             } else if (FIELD_TO_INI[f]) {
-              updated = setIniValue(updated, FIELD_TO_INI[f].section, FIELD_TO_INI[f].key, state[f]);
+              updated = setIniValue(updated, FIELD_TO_INI[f].section, FIELD_TO_INI[f].key, this._fieldToIniValue(f, state[f]));
             }
           }
           return fs.writeFileAsync(settingsPath, updated, 'utf8')

@@ -41,7 +41,8 @@ const mockUtil = {
   opn: (p) => Promise.resolve(p),
 };
 
-const mockLog = () => {};
+let logCalls = [];
+const mockLog = (level, message, meta) => { logCalls.push({ level, message, meta }); };
 
 // IMPORTANT: index.js captures the OBJECT REFERENCE returned by require('https').
 // Swapping the whole object has no effect after module load — mutate .get instead.
@@ -255,6 +256,16 @@ test('skips commented-out lines', () => {
     idx.getIniValue('[Debug]\n; GraphicsAPI = opengl\nGraphicsAPI = dx11\n', 'Debug', 'GraphicsAPI'),
     'dx11');
 });
+test('strips a trailing inline comment from the value (Fix 4)', () => {
+  assert.strictEqual(
+    idx.getIniValue('[Debug]\nConsoleEnabled = 1 ; enable debug console\n', 'Debug', 'ConsoleEnabled'),
+    '1');
+});
+test('strips a trailing inline # comment from the value (Fix 4)', () => {
+  assert.strictEqual(
+    idx.getIniValue('[Debug]\nConsoleEnabled = 1 # enable debug console\n', 'Debug', 'ConsoleEnabled'),
+    '1');
+});
 
 // ===========================================================================
 // 5. setIniValue  (Part D)
@@ -297,6 +308,13 @@ test('round-trip: setIniValue result readable by getIniValue', () => {
   const out = idx.setIniValue(ini, 'Debug', 'GraphicsAPI', 'dx11');
   assert.strictEqual(idx.getIniValue(out, 'Debug', 'GraphicsAPI'), 'dx11');
 });
+test('duplicated [Debug] section: write keeps a single canonical value, no stale duplicate (Fix 5)', () => {
+  const ini = '[Debug]\nFoo = 1\n\n[Debug]\nGraphicsAPI = opengl\n';
+  const out = idx.setIniValue(ini, 'Debug', 'GraphicsAPI', 'dx11');
+  const matches = out.match(/GraphicsAPI\s*=\s*\S+/gi) || [];
+  assert.strictEqual(matches.length, 1, 'exactly one GraphicsAPI line must remain after the write');
+  assert.strictEqual(idx.getIniValue(out, 'Debug', 'GraphicsAPI'), 'dx11', 'read-back must return the written value');
+});
 
 // ===========================================================================
 // 6. installUE4SSInjector  (C1 — flat layout, generatefile, fallback)
@@ -335,6 +353,17 @@ test('falls back to plain copy when readFileAsync throws', () => {
         'no generatefile on read error');
       assert.ok(r.instructions.find(i => i.type === 'copy' && i.destination === 'UE4SS-settings.default.ini'),
         'falls back to copy on read error');
+    });
+});
+test('logs a warning when falling back to the unpatched archive INI (Fix 1)', () => {
+  const savedRead = mockFs.readFileAsync;
+  logCalls = [];
+  mockFs.readFileAsync = () => Promise.reject(new Error('ENOENT'));
+  return idx.installUE4SSInjector(['dwmapi.dll', 'UE4SS-settings.ini'], '/dest')
+    .then(r => {
+      mockFs.readFileAsync = savedRead;
+      assert.ok(logCalls.some(c => c.level === 'warn'),
+        'a warning is logged so the unpatched-template fallback is not silent');
     });
 });
 test('filters out directory entries (trailing path sep) and traversal paths', () =>
@@ -508,6 +537,22 @@ test('dialog text names the release tag + Binaries/Win64 + experimental', () => 
     assert.ok(dialogText.includes('experimental'),         'dialog mentions experimental build');
   });
 });
+test('aborts safely (no throw, no download) when api.showDialog is unavailable (Fix 7)', async () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, {
+    tag_name: 'experimental-latest',
+    assets: [{ name: 'UE4SS_v3.0.1-953-gb872ad11.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1-953-gb872ad11.zip' }],
+  });
+  let emitCalled = false;
+  const fakeApi = {
+    sendNotification: () => {},
+    events: { emit: () => { emitCalled = true; } },
+    // no showDialog on this api surface
+  };
+  await assert.doesNotReject(idx.downloadUE4SS(fakeApi), 'downloadUE4SS must not throw when showDialog is missing');
+  mockHttps.get = savedGet;
+  assert.ok(!emitCalled, 'must not start a download without consent when showDialog is unavailable');
+});
 test('skips download for untrusted asset URL (H1 guard)', () => {
   const savedGet = mockHttps.get;
   mockHttps.get = makeHttpsGet(200, {
@@ -648,6 +693,10 @@ test('getIniListValues: ignores commented +key lines', () => {
   const result = idx.getIniListValues(OVERRIDES_INI, 'Overrides', 'ModsFolderPaths');
   assert.strictEqual(result.length, 2, 'commented +key line must be ignored');
 });
+test('getIniListValues: strips a trailing inline comment from each value (Fix 4)', () => {
+  const ini = '[Overrides]\n+ModsFolderPaths = ../Mods1 ; shared\n';
+  assert.deepStrictEqual(idx.getIniListValues(ini, 'Overrides', 'ModsFolderPaths'), ['../Mods1']);
+});
 
 test('setIniListValues: removes old entries and inserts new ones', () => {
   const result = idx.setIniListValues(OVERRIDES_INI, 'Overrides', 'ModsFolderPaths', ['../Mods1', '../Mods3']);
@@ -672,13 +721,12 @@ test('setIniListValues: empty array removes all +key lines', () => {
   // Non-list keys must still be present
   assert.ok(result.includes('ModsFolderPath ='));
 });
-test('setIniListValues: also removes -key lines', () => {
+test('setIniListValues: preserves existing -key override lines across an unrelated +key save (Fix 2)', () => {
   const ini = '[Overrides]\nModsFolderPath =\n-ModsFolderPaths = ../Stale\n+ModsFolderPaths = ../Keep\n';
   const result = idx.setIniListValues(ini, 'Overrides', 'ModsFolderPaths', ['../New']);
-  assert.ok(!result.includes('-ModsFolderPaths'), '-key line should be removed');
-  assert.ok(!result.includes('../Stale'),         'old -key value should be gone');
-  assert.ok(!result.includes('../Keep'),          'old +key value should be gone');
-  assert.ok(result.includes('+ModsFolderPaths = ../New'), 'new +key line present');
+  assert.ok(result.includes('-ModsFolderPaths = ../Stale'), '-key override line must survive an unrelated +key save');
+  assert.ok(!result.includes('+ModsFolderPaths = ../Keep'), 'old +key value should be replaced');
+  assert.ok(result.includes('+ModsFolderPaths = ../New'),   'new +key line present');
 });
 test('setIniListValues: creates [Overrides] section when absent', () => {
   const ini = '[Debug]\nGraphicsAPI = dx11\n';
@@ -945,13 +993,41 @@ test('save(): patches INI, writes file, and sends success notification', async (
   assert.ok(writtenContent.includes('GuiConsoleEnabled'), 'written content has GuiConsoleEnabled');
   assert.ok(notifSent,                               'success notification was sent');
 });
+test('save(): writes every dirty boolean field as "1"/"0", never "true"/"false" (Fix 8)', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedRead  = mockFs.readFileAsync;
+  const savedWrite = mockFs.writeFileAsync;
+  let writtenContent = null;
+  mockFs.statAsync      = (p) => p === FLAT_SETTINGS ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  mockFs.readFileAsync  = () => Promise.resolve('[Debug]\n');
+  mockFs.writeFileAsync = (_p, c) => { writtenContent = c; return Promise.resolve(); };
+  const inst = new idx.UE4SSSettingsPage({ api: mockContext.api });
+  inst.state = {
+    settingsPath: FLAT_SETTINGS, graphicsAPI: 'dx11',
+    consoleEnabled: true, guiConsoleEnabled: false, guiConsoleVisible: true, renderMode: 'ExternalThread',
+    modFolders: [], newFolder: '', loaded: true, error: null,
+    dirtyFields: { consoleEnabled: true, guiConsoleEnabled: true, guiConsoleVisible: true },
+    fileMtime: null, loadedValues: null,
+  };
+  inst.save();
+  await flushPromises();
+  mockFs.statAsync     = savedStat;
+  mockFs.readFileAsync = savedRead;
+  mockFs.writeFileAsync = savedWrite;
+  assert.ok(writtenContent, 'writeFileAsync was called');
+  assert.ok(writtenContent.includes('ConsoleEnabled = 1'),     'consoleEnabled true -> "1"');
+  assert.ok(writtenContent.includes('GuiConsoleEnabled = 0'),  'guiConsoleEnabled false -> "0"');
+  assert.ok(writtenContent.includes('GuiConsoleVisible = 1'),  'guiConsoleVisible true -> "1"');
+  assert.ok(!writtenContent.includes('true') && !writtenContent.includes('false'),
+    'must never write the raw JS boolean stringified form');
+});
 
 // ===========================================================================
 // 14. registerModType path callback — discovery guard (Fix 3)
 // ===========================================================================
 console.log('\nregisterModType path callback');
 
-test('returns "." when discovery is absent for game (Fix 3)', () => {
+test('throws instead of silently returning "." when discovery is absent for game (Fix 6)', () => {
   let capturedPathCb = null;
   const ctx = {
     api: {
@@ -972,8 +1048,30 @@ test('returns "." when discovery is absent for game (Fix 3)', () => {
   const { default: mainFn } = idx;
   mainFn(ctx);
   assert.ok(capturedPathCb, 'path callback should have been captured');
-  const result = capturedPathCb({ id: 'emergency2023' });
-  assert.strictEqual(result, '.', 'should return "." when discovery is absent');
+  assert.throws(() => capturedPathCb({ id: 'emergency2023' }),
+    /discovery/i, 'should throw loudly instead of silently returning "." (Vortex\'s own cwd)');
+});
+test('modType path callback throws a controlled error (not a raw TypeError) when state.settings.gameMode itself is missing (Fix 9)', () => {
+  let capturedPathCb = null;
+  const ctx = {
+    api: {
+      getState: () => ({ settings: {} }), // gameMode itself is missing, not just empty
+      sendNotification: () => {},
+      showDialog: () => Promise.resolve(null),
+      events: { emit: () => {} },
+      onAsync: () => {},
+    },
+    registerModType:   (_id, _pri, _supported, pathCb) => { capturedPathCb = pathCb; },
+    registerInstaller: () => {},
+    registerGame:      () => {},
+    registerSettings:  () => {},
+    once: (fn) => fn(),
+  };
+  const { default: mainFn } = idx;
+  mainFn(ctx);
+  assert.ok(capturedPathCb, 'path callback should have been captured');
+  assert.throws(() => capturedPathCb({ id: 'emergency2023' }), /discovery path unavailable/i,
+    'must throw our controlled error, not a raw TypeError from an unguarded property access');
 });
 test('returns Binaries/Win64 path when discovery is present (Fix 3)', () => {
   let capturedPathCb = null;
@@ -998,7 +1096,72 @@ test('returns Binaries/Win64 path when discovery is present (Fix 3)', () => {
   assert.ok(capturedPathCb, 'path callback should have been captured');
   const result = capturedPathCb({ id: 'emergency2023' });
   assert.ok(result.includes('Binaries'), 'should include Binaries in path');
-  assert.ok(result.startsWith('/game'),  'should start with the game path');
+  assert.ok(result.startsWith(path.join('/game', 'EMERGENCY')), 'should start with the game path');
+});
+
+// ===========================================================================
+// 14b. queryModPath layout detection (Fix 3)
+// ===========================================================================
+console.log('\nqueryModPath layout detection (Fix 3)');
+
+const MOD_PATH_NESTED_REL = path.join('EMERGENCY', 'Binaries', 'Win64', 'ue4ss', 'Mods');
+const MOD_PATH_FLAT_REL   = path.join('EMERGENCY', 'Binaries', 'Win64', 'Mods');
+
+function makeCapturingContext() {
+  const captured = {};
+  const ctx = {
+    api: {
+      getState:         () => mockState,
+      sendNotification: () => {},
+      showDialog:       () => Promise.resolve({ action: 'Download UE4SS' }),
+      events:           { emit: () => {} },
+      onAsync:          () => {},
+    },
+    registerModType:   () => {},
+    registerInstaller: () => {},
+    registerGame:      (cfg) => { captured.gameConfig = cfg; },
+    registerSettings:  () => {},
+    once: (fn) => fn(),
+  };
+  return { ctx, captured };
+}
+
+test('queryModPath defaults to nested Mods path before UE4SS is installed (Fix 3)', async () => {
+  const savedStat  = mockFs.statAsync;
+  const savedHttps = mockHttps.get;
+  mockFs.statAsync = () => Promise.reject(new Error('ENOENT')); // nothing installed yet
+  mockHttps.get    = makeHttpsGet(404, {}); // fetchLatestUE4SS resolves quickly to null
+  const { ctx, captured } = makeCapturingContext();
+  const { default: mainFn } = idx;
+  mainFn(ctx);
+  await captured.gameConfig.setup({ path: '/game' });
+  mockFs.statAsync = savedStat;
+  mockHttps.get    = savedHttps;
+  assert.strictEqual(captured.gameConfig.queryModPath(), MOD_PATH_NESTED_REL);
+});
+
+test('queryModPath detects an installed flat UE4SS layout and returns the flat Mods path (Fix 3)', async () => {
+  const savedStat = mockFs.statAsync;
+  const flatDll   = path.join(WIN64, 'UE4SS.dll');
+  mockFs.statAsync = (p) => (p === WIN64 || p === flatDll) ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  const { ctx, captured } = makeCapturingContext();
+  const { default: mainFn } = idx;
+  mainFn(ctx);
+  await captured.gameConfig.setup({ path: '/game' });
+  mockFs.statAsync = savedStat;
+  assert.strictEqual(captured.gameConfig.queryModPath(), MOD_PATH_FLAT_REL);
+});
+
+test('queryModPath stays nested when only the nested UE4SS layout is installed (Fix 3)', async () => {
+  const savedStat = mockFs.statAsync;
+  const nestedDll = path.join(WIN64, 'ue4ss', 'UE4SS.dll');
+  mockFs.statAsync = (p) => (p === WIN64 || p === nestedDll) ? Promise.resolve({}) : Promise.reject(new Error('ENOENT'));
+  const { ctx, captured } = makeCapturingContext();
+  const { default: mainFn } = idx;
+  mainFn(ctx);
+  await captured.gameConfig.setup({ path: '/game' });
+  mockFs.statAsync = savedStat;
+  assert.strictEqual(captured.gameConfig.queryModPath(), MOD_PATH_NESTED_REL);
 });
 
 // ===========================================================================
@@ -1146,6 +1309,34 @@ test('(b) did-deploy: emergency2023 profile + discovery -> ensureUserSettingsFil
   mockFs.readFileAsync = savedRead;
   mockFs.writeFileAsync = savedWrite;
   assert.ok(writeWasCalled, 'writeFileAsync should have been called to create settings from template');
+});
+
+test('(d) did-deploy: does not throw when state.settings.gameMode itself is missing (Fix 9)', async () => {
+  let capturedHandler = null;
+  const ctx = {
+    api: {
+      getState: () => ({
+        settings: {}, // gameMode itself is missing, not just empty discovered
+        persistent: { profiles: { 'prof-em': { gameId: 'emergency2023' } } },
+      }),
+      sendNotification: () => {},
+      showDialog: () => Promise.resolve(null),
+      events: { emit: () => {} },
+      onAsync: (_ev, fn) => { capturedHandler = fn; },
+    },
+    registerModType:   () => {},
+    registerInstaller: () => {},
+    registerGame:      () => {},
+    registerSettings:  () => {},
+    once: (fn) => fn(),
+  };
+  const { default: mainFn } = idx;
+  mainFn(ctx);
+  assert.ok(capturedHandler, 'onAsync handler should be registered');
+  await assert.doesNotReject(
+    (async () => { await capturedHandler('prof-em'); })(),
+    'did-deploy handler must not throw when gameMode is missing from state',
+  );
 });
 
 test('(c) did-deploy: write error -> sendNotification warning called', async () => {
