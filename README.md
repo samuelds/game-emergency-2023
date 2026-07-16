@@ -17,9 +17,9 @@ Detection uses `util.GameStoreHelper.findByAppId(['850170'])` — standard Vorte
 
 ## Mod deploy path
 
-Mods are deployed into `EMERGENCY/Binaries/Win64/Mods` — the **flat** layout used by the
-official `UE4SS_v3.0.1.zip` (UE4SS extracts `dwmapi.dll`, `UE4SS-settings.ini`, and `Mods/`
-directly into `Binaries/Win64`; no `ue4ss/` subfolder).
+Mods are deployed into `EMERGENCY/Binaries/Win64/ue4ss/Mods` by default (the nested layout).
+`queryModPath` detects the actual installed UE4SS layout at deploy time and switches to the
+**flat** `EMERGENCY/Binaries/Win64/Mods` path when a flat `UE4SS.dll` is found instead.
 
 ## UE4SS injector mod type
 
@@ -43,7 +43,7 @@ On first launch (`setup` callback), if UE4SS is not already installed:
    `dwmapi.dll`, `UE4SS.dll`, `UE4SS-settings.ini`, `ue4ss/UE4SS-settings.ini`,
    `ue4ss/UE4SS.dll`. Any one present → skip. If `Binaries/Win64` itself is absent
    (unexpected layout) → also skip (fail-safe, never clobbers).
-2. **Fetch** — queries `https://api.github.com/repos/UE4SS-RE/RE-UE4SS/releases/latest`
+2. **Fetch** — queries `https://api.github.com/repos/UE4SS-RE/RE-UE4SS/releases/tags/experimental-latest`
    for the first asset matching `UE4SS_v*.zip`.
 3. **Trust check** — download URL must be `https://` from `github.com` or
    `objects.githubusercontent.com`; asset name is re-validated against the pattern.
@@ -82,6 +82,7 @@ vortex-emergency2023/
 ├── info.json          ← extension metadata (name, version 1.2.0, description)
 ├── index.js           ← plain JS, no build step required
 ├── gameart.png        ← 2048×1024 key art (T_LoginBackground_BC)
+├── src/                ← required by index.js (constants, ini, ue4ss, settings-page)
 └── test/
     └── index.test.js  ← offline unit tests (plain Node, no deps)
 ```
@@ -103,7 +104,10 @@ Tests cover: `isSafeRelPath`, `isTrustedUE4SSAsset`, `testUE4SSInjector` (flat +
 
 ## Build and submit
 
-1. Zip the three top-level files (`info.json`, `index.js`, `gameart.png`) — no subfolder.
+1. Run `scripts/package.ps1` to produce `dist/game-emergency-2023-<version>.zip` with
+   `info.json`, `index.js`, `gameart.png` and `src/` at the **root** of the archive.
+   **Do not** upload a GitHub "Source code (zip)" release asset — it nests everything under
+   `game-emergency-2023-<tag>/`, which Vortex rejects (see [#23414](https://github.com/Nexus-Mods/Vortex/issues/23414)).
 2. Upload to [nexusmods.com/site/mods](https://www.nexusmods.com/site/mods) (Vortex extension
    category). The upload version **must match** `info.json` → `1.2.0`.
 3. Submit the **Review Extension** form on the Vortex GitHub repository.
