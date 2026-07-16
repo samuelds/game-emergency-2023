@@ -79,7 +79,7 @@ Changes are written back to the live INI file; a success notification confirms t
 
 ```
 vortex-emergency2023/
-├── info.json          ← extension metadata (name, version 1.2.0, description)
+├── info.json          ← extension metadata (name, version 1.2.1, description)
 ├── index.js           ← plain JS, no build step required
 ├── gameart.png        ← 2048×1024 key art (T_LoginBackground_BC)
 ├── src/                ← required by index.js (constants, ini, ue4ss, settings-page)
@@ -109,7 +109,7 @@ Tests cover: `isSafeRelPath`, `isTrustedUE4SSAsset`, `testUE4SSInjector` (flat +
    **Do not** upload a GitHub "Source code (zip)" release asset — it nests everything under
    `game-emergency-2023-<tag>/`, which Vortex rejects (see [#23414](https://github.com/Nexus-Mods/Vortex/issues/23414)).
 2. Upload to [nexusmods.com/site/mods](https://www.nexusmods.com/site/mods) (Vortex extension
-   category). The upload version **must match** `info.json` → `1.2.0`.
+   category). The upload version **must match** `info.json` → `1.2.1`.
 3. Submit the **Review Extension** form on the Vortex GitHub repository.
    A reviewer responds within ~5 working days. Increment `version` on every re-upload.
 
