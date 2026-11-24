@@ -5,7 +5,7 @@ const GAME_ID             = 'emergency2023';
 const STEAM_APP_ID        = '850170';
 const EXECUTABLE          = 'EMERGENCY.exe';
 const BINARIES_WIN64      = path.join('EMERGENCY', 'Binaries', 'Win64');
-// Nested layout — experimental build uses ue4ss/ subfolder. This is the
+// Nested layout — UE4SS 4.0.0 uses ue4ss/ subfolder. This is the
 // default until an installed flat layout is detected (see findModsPath).
 const MOD_PATH            = path.join(BINARIES_WIN64, 'ue4ss', 'Mods');
 const MOD_PATH_FLAT       = path.join(BINARIES_WIN64, 'Mods');

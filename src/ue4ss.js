@@ -87,7 +87,7 @@ function fetchLatestUE4SS() {
         'Accept': 'application/vnd.github+json',
       },
     };
-    const req = https.get(UE4SS_GITHUB + '/releases/tags/experimental-latest', opts, (res) => {
+    const req = https.get(UE4SS_GITHUB + '/releases/tags/v4.0.0', opts, (res) => {
       let body = '';
       res.on('data', d => body += d);
       res.on('end', () => {
@@ -97,7 +97,7 @@ function fetchLatestUE4SS() {
         }
         try {
           const rel   = JSON.parse(body);
-          const asset = (rel.assets || []).find(a => UE4SS_ASSET_PATTERN.test(a.name));
+          const asset = (rel.assets || []).find(a => a.name === 'UE4SS_v4.0.0.zip');
           if (asset && !isTrustedUE4SSAsset(asset)) {
             log('warn', 'UE4SS asset rejected (untrusted url/name)', { name: asset.name });
             return resolve(null);
@@ -122,13 +122,21 @@ function fetchLatestUE4SS() {
 // ---------------------------------------------------------------------------
 
 async function downloadUE4SS(api) {
+  const stagedMods = api.getState?.()?.persistent?.mods?.[GAME_ID] || {};
+  if (Object.values(stagedMods).some(mod => mod?.type === UE4SS_INJECTOR_MODTYPE && mod.state === 'installed')) {
+    api.sendNotification({
+      id: 'emergency2023-deploy-ue4ss', type: 'info', title: 'UE4SS is already installed in Vortex',
+      message: 'Enable the UE4SS injector for this profile and deploy your mods to the current game folder.',
+    });
+    return;
+  }
   const asset = await fetchLatestUE4SS();
   if (!asset) {
     api.sendNotification({
       id: 'ue4ss-fetch-failed',
       type: 'warning',
       title: 'Could not reach GitHub to download UE4SS',
-      message: 'Check your connection, or install UE4SS manually (github.com/UE4SS-RE/RE-UE4SS, experimental build) into EMERGENCY/Binaries/Win64.',
+      message: 'Check your connection, or install UE4SS manually (github.com/UE4SS-RE/RE-UE4SS, v4.0.0 stable) into EMERGENCY/Binaries/Win64.',
     });
     return;
   }
@@ -142,7 +150,7 @@ async function downloadUE4SS(api) {
     'question',
     'Install UE4SS?',
     {
-      text: 'EMERGENCY 2023 mods require UE4SS (' + asset.tag + ', experimental build — required for UE5.3.2; the 3.0.1 stable crashes this game). Vortex will download the official release from github.com/UE4SS-RE/RE-UE4SS and install it into Binaries/Win64. Continue?',
+      text: 'EMERGENCY 2023 mods require UE4SS (' + asset.tag + ', stable release). Vortex will download the official release from github.com/UE4SS-RE/RE-UE4SS and install it into Binaries/Win64. Continue?',
     },
     [{ label: 'Cancel' }, { label: 'Download UE4SS' }],
   );
@@ -151,7 +159,13 @@ async function downloadUE4SS(api) {
 
   try {
     const dlId = await util.toPromise(cb =>
-      api.events.emit('start-download', [asset.url], { game: GAME_ID }, asset.name, cb, 'never', { allowInstall: false }));
+      api.events.emit('start-download', [asset.url], { game: GAME_ID }, asset.name, cb, 'never', { allowInstall: false }))
+      .catch(err => {
+        if (err?.downloadId && (err.name === 'AlreadyDownloaded' || err.message === 'File already downloaded')) {
+          return err.downloadId;
+        }
+        throw err;
+      });
     await util.toPromise(cb =>
       api.events.emit('start-install-download', dlId, { allowAutoEnable: true }, cb));
   } catch (err) {
@@ -224,7 +238,7 @@ async function ensureUserSettingsFile(root) {
 // ---------------------------------------------------------------------------
 // B4 — Mods path: flat layout if a flat UE4SS.dll is present, nested otherwise
 // (nested is also the correct default before UE4SS is installed, since that's
-// what the auto-installed experimental build uses).
+// what the auto-installed stable build uses).
 // ---------------------------------------------------------------------------
 
 async function findModsPath(root) {
