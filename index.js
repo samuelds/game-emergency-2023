@@ -12,7 +12,7 @@
  * LIVE-RESOLVED via the in-game MCP (KismetSystemLibrary path query, 2026-06-06):
  *   - Steam install root  : .../steamapps/common/EMERGENCY/   (what findByAppId returns)
  *   - UE project folder   : EMERGENCY  (so the project lives at <root>/EMERGENCY/)
- *   - UE4SS layout        : experimental build uses ue4ss/ SUBFOLDER (dwmapi.dll at Win64 root,
+ *   - UE4SS layout        : stable 4.0.0 uses ue4ss/ SUBFOLDER (dwmapi.dll at Win64 root,
  *                           UE4SS.dll + UE4SS-settings.ini + Mods/ inside ue4ss/). 3.0.1 stable crashes.
  *   - UE4SS mod path      : EMERGENCY/Binaries/Win64/ue4ss/Mods  (relative to root)
  *   - executable          : EMERGENCY.exe  (root launcher Steam runs; live-listed) ✓ G1 resolved
@@ -31,8 +31,8 @@
  *     https-only, and the asset name is re-validated before the URL is trusted.
  *   - An explicit consent dialog names the release version and destination folder before
  *     any download is started; user can cancel without side effects.
- *   - Grounded: repo UE4SS-RE/RE-UE4SS, tag experimental-latest (rolling), dest Binaries/Win64.
- *   - NOTE: 3.0.1 stable crashes EMERGENCY 2023 (UE5.3.2); experimental build required.
+ *   - Grounded: repo UE4SS-RE/RE-UE4SS, tag v4.0.0 (stable), dest Binaries/Win64.
+ *   - NOTE: 3.0.1 stable crashes EMERGENCY 2023 (UE5.3.2); v4.0.0 stable was validated with this game.
  *   - A Vortex settings page (src/settings-page.js) lets users edit all [Debug] keys.
  *
  * ALL paths live-resolved via the in-game MCP (KismetSystemLibrary + io.popen dir, 2026-06-06).
@@ -41,7 +41,7 @@
  */
 'use strict';
 const path = require('path');
-const { fs, util } = require('vortex-api');
+const { fs, selectors } = require('vortex-api');
 let reactBootstrap = null;
 try { reactBootstrap = require('react-bootstrap'); } catch (_) {}
 
@@ -134,12 +134,12 @@ function main(context) {
   // E4 — settings page: only register if react-bootstrap is available and game is discovered.
   if (reactBootstrap) {
     context.registerSettings(
-      'UE4SS',
+      'EMERGENCY 2023 · UE4SS',
       UE4SSSettingsPage,
       () => ({ api: context.api }),
       () => {
         const disc = getDiscovery(context.api, GAME_ID);
-        return !!(disc && disc.path);
+        return !!(disc && disc.path) && selectors.activeGameId(context.api.getState()) === GAME_ID;
       },
       100,
     );
