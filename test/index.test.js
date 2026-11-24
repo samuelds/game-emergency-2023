@@ -51,7 +51,7 @@ const mockHttps = { get: (_u, _o, _cb) => ({ on: () => {} }) };
 // Override before loading the module under test
 const originalLoad = Module._load;
 Module._load = function(request, parent, isMain) {
-  if (request === 'vortex-api')      return { fs: mockFs, util: mockUtil, log: mockLog };
+  if (request === 'vortex-api')      return { selectors: { activeGameId: state => state.activeGame }, fs: mockFs, util: mockUtil, log: mockLog };
   if (request === 'https')           return mockHttps;  // returns the same object every time
   if (request === 'react')           return mockReact;
   if (request === 'react-bootstrap') return mockRbs;
@@ -391,27 +391,27 @@ test('setmodtype is always the last instruction', () => {
 // ===========================================================================
 console.log('\nfetchLatestUE4SS');
 
-test('(c) selects experimental asset and skips zDEV/zCustom/zMap variants', () => {
+test('(c) selects stable asset and skips zDEV/zCustom/zMap variants', () => {
   const savedGet = mockHttps.get;
   let capturedUrl = '';
   mockHttps.get = function(url, opts, cb) {
     capturedUrl = url;
     return makeHttpsGet(200, {
-      tag_name: 'experimental-latest',
+      tag_name: 'v4.0.0',
       assets: [
-        { name: 'zDEV-UE4SS_v3.0.1-953-gb872ad11.zip', browser_download_url: 'https://github.com/x' },
+        { name: 'zDEV-UE4SS_v4.0.0.zip', browser_download_url: 'https://github.com/x' },
         { name: 'zCustomGameConfigs.zip',                browser_download_url: 'https://github.com/x' },
         { name: 'zMapGenBP.zip',                         browser_download_url: 'https://github.com/x' },
-        { name: 'UE4SS_v3.0.1-953-gb872ad11.zip',        browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1-953-gb872ad11.zip' },
+        { name: 'UE4SS_v4.0.0.zip',        browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v4.0.0.zip' },
       ],
     })(url, opts, cb);
   };
   return idx.fetchLatestUE4SS().then(asset => {
     mockHttps.get = savedGet;
     assert.ok(asset, 'should return an asset');
-    assert.strictEqual(asset.name, 'UE4SS_v3.0.1-953-gb872ad11.zip');
-    assert.strictEqual(asset.tag, 'experimental-latest');
-    assert.ok(capturedUrl.includes('/releases/tags/experimental-latest'), 'endpoint uses experimental-latest tag');
+    assert.strictEqual(asset.name, 'UE4SS_v4.0.0.zip');
+    assert.strictEqual(asset.tag, 'v4.0.0');
+    assert.ok(capturedUrl.includes('/releases/tags/v4.0.0'), 'endpoint uses v4.0.0 tag');
   });
 });
 test('(d) returns null on non-200 status', () => {
@@ -434,7 +434,7 @@ test('returns null when asset URL is untrusted (H1 re-validation)', () => {
   const savedGet = mockHttps.get;
   mockHttps.get = makeHttpsGet(200, {
     tag_name: 'v3.0.1',
-    assets: [{ name: 'UE4SS_v3.0.1.zip', browser_download_url: 'https://evil.com/UE4SS_v3.0.1.zip' }],
+    assets: [{ name: 'UE4SS_v4.0.0.zip', browser_download_url: 'https://evil.com/UE4SS_v3.0.1.zip' }],
   });
   return idx.fetchLatestUE4SS().then(asset => {
     mockHttps.get = savedGet;
@@ -479,8 +479,8 @@ test('sends warning notification when asset is null (Fix 2)', () => {
 test('aborts download when user clicks Cancel', () => {
   const savedGet = mockHttps.get;
   mockHttps.get = makeHttpsGet(200, {
-    tag_name: 'experimental-latest',
-    assets: [{ name: 'UE4SS_v3.0.1-953-gb872ad11.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1-953-gb872ad11.zip' }],
+    tag_name: 'v4.0.0',
+    assets: [{ name: 'UE4SS_v4.0.0.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v4.0.0.zip' }],
   });
   const savedDialog = mockContext.api.showDialog;
   mockContext.api.showDialog = () => Promise.resolve({ action: 'Cancel' });
@@ -497,8 +497,8 @@ test('aborts download when user clicks Cancel', () => {
 test('starts download + install when user confirms', () => {
   const savedGet = mockHttps.get;
   mockHttps.get = makeHttpsGet(200, {
-    tag_name: 'experimental-latest',
-    assets: [{ name: 'UE4SS_v3.0.1-953-gb872ad11.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1-953-gb872ad11.zip' }],
+    tag_name: 'v4.0.0',
+    assets: [{ name: 'UE4SS_v4.0.0.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v4.0.0.zip' }],
   });
   const savedDialog = mockContext.api.showDialog;
   mockContext.api.showDialog = () => Promise.resolve({ action: 'Download UE4SS' });
@@ -517,11 +517,11 @@ test('starts download + install when user confirms', () => {
     assert.ok(emitted.includes('start-install-download'), 'start-install-download emitted');
   });
 });
-test('dialog text names the release tag + Binaries/Win64 + experimental', () => {
+test('dialog text names the release tag + Binaries/Win64 + stable', () => {
   const savedGet = mockHttps.get;
   mockHttps.get = makeHttpsGet(200, {
-    tag_name: 'experimental-latest',
-    assets: [{ name: 'UE4SS_v3.0.1-953-gb872ad11.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1-953-gb872ad11.zip' }],
+    tag_name: 'v4.0.0',
+    assets: [{ name: 'UE4SS_v4.0.0.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v4.0.0.zip' }],
   });
   let dialogText = '';
   const savedDialog = mockContext.api.showDialog;
@@ -532,16 +532,16 @@ test('dialog text names the release tag + Binaries/Win64 + experimental', () => 
   return idx.downloadUE4SS(mockContext.api).then(() => {
     mockHttps.get = savedGet;
     mockContext.api.showDialog = savedDialog;
-    assert.ok(dialogText.includes('experimental-latest'), 'tag in dialog text');
+    assert.ok(dialogText.includes('v4.0.0'), 'tag in dialog text');
     assert.ok(dialogText.includes('Binaries/Win64'),       'destination in dialog text');
-    assert.ok(dialogText.includes('experimental'),         'dialog mentions experimental build');
+    assert.ok(dialogText.includes('stable'),         'dialog mentions stable build');
   });
 });
 test('aborts safely (no throw, no download) when api.showDialog is unavailable (Fix 7)', async () => {
   const savedGet = mockHttps.get;
   mockHttps.get = makeHttpsGet(200, {
-    tag_name: 'experimental-latest',
-    assets: [{ name: 'UE4SS_v3.0.1-953-gb872ad11.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v3.0.1-953-gb872ad11.zip' }],
+    tag_name: 'v4.0.0',
+    assets: [{ name: 'UE4SS_v4.0.0.zip', browser_download_url: 'https://objects.githubusercontent.com/UE4SS_v4.0.0.zip' }],
   });
   let emitCalled = false;
   const fakeApi = {
@@ -557,7 +557,7 @@ test('skips download for untrusted asset URL (H1 guard)', () => {
   const savedGet = mockHttps.get;
   mockHttps.get = makeHttpsGet(200, {
     tag_name: 'v3.0.1',
-    assets: [{ name: 'UE4SS_v3.0.1.zip', browser_download_url: 'https://evil.com/UE4SS_v3.0.1.zip' }],
+    assets: [{ name: 'UE4SS_v4.0.0.zip', browser_download_url: 'https://evil.com/UE4SS_v3.0.1.zip' }],
   });
   let dialogCalled = false;
   const savedDialog = mockContext.api.showDialog;
@@ -1720,6 +1720,44 @@ test('unknown graphicsAPI value: render() adds (manual) option to select', () =>
 // ===========================================================================
 // Runner
 // ===========================================================================
+test('settings panel is game-specific when both games are discovered', () => {
+  const state = { ...mockState, activeGame: 'cure' };
+  let visible;
+  idx.default({ ...mockContext, api: { ...mockContext.api, getState: () => state },
+    registerSettings: (title, page, props, predicate) => {
+      assert.strictEqual(title, 'EMERGENCY 2023 · UE4SS');
+      visible = predicate;
+    },
+  });
+  assert.strictEqual(visible(), false);
+  state.activeGame = 'emergency2023';
+  assert.strictEqual(visible(), true);
+});
+
+test('installs an already downloaded archive using its existing ID', async () => {
+  const savedGet = mockHttps.get;
+  mockHttps.get = makeHttpsGet(200, { tag_name: 'v4.0.0',
+    assets: [{ name: 'UE4SS_v4.0.0.zip', browser_download_url: 'https://github.com/ue4ss.zip' }] });
+  let installed;
+  try {
+    await idx.downloadUE4SS({ ...mockContext.api, showDialog: async () => ({ action: 'Download UE4SS' }),
+      events: { emit(event, ...args) {
+        if (event === 'start-download') args[3](Object.assign(new Error('File already downloaded'), { downloadId: 'existing' }));
+        if (event === 'start-install-download') { installed = args[0]; args[2](null); }
+      } },
+    });
+    assert.strictEqual(installed, 'existing');
+  } finally { mockHttps.get = savedGet; }
+});
+
+test('staged injector prompts for deployment after moving the game', async () => {
+  let notice;
+  await idx.downloadUE4SS({ getState: () => ({ persistent: { mods: { emergency2023: {
+    injector: { type: 'emergency2023-ue4ss-injector', state: 'installed' },
+  } } } }), sendNotification: value => { notice = value; } });
+  assert.strictEqual(notice.id, 'emergency2023-deploy-ue4ss');
+});
+
 (async () => {
   for (const t of tests) await t();
   console.log('\n' + passed + '/' + (passed + failed) + ' tests passed.');
